@@ -1372,11 +1372,59 @@ def _write_preview_pptx_portrait(
     tx(s2, Inches(0.6), Inches(0.85), Inches(6), Inches(0.5), "Executive Summary", sz=26, bold=True, rgb=BLACK)
     rect(s2, Inches(0.6), Inches(1.35), Inches(2), Inches(0.06), GOLD)
 
-    # Investment Thesis — EXPANDED (6" tall block)
+    # Investment Thesis — COMPACT (2.8" tall to make room for charts)
     tx(s2, Inches(0.6), Inches(1.6), Inches(1.5), Inches(0.3), "Investment Thesis", sz=12, bold=True, rgb=MUTED)
-    rect(s2, Inches(0.6), Inches(1.95), Inches(6.3), Inches(5.5), RGBColor(0xFA, 0xF8, 0xF3), RGBColor(0xDB, 0xE0, 0xE6))
-    rect(s2, Inches(0.6), Inches(1.95), Inches(0.06), Inches(5.5), GOLD)
-    tx(s2, Inches(0.78), Inches(2.1), Inches(6.0), Inches(5.2), iv_text or "—", sz=12, rgb=BLACK, line_spacing=1.15)
+    rect(s2, Inches(0.6), Inches(1.95), Inches(6.3), Inches(2.8), RGBColor(0xFA, 0xF8, 0xF3), RGBColor(0xDB, 0xE0, 0xE6))
+    rect(s2, Inches(0.6), Inches(1.95), Inches(0.06), Inches(2.8), GOLD)
+    # Scale font for thesis length
+    _iv_len = len((iv_text or "").strip())
+    _iv_sz = 11 if _iv_len > 600 else (12 if _iv_len > 400 else 12)
+    tx(s2, Inches(0.78), Inches(2.1), Inches(6.0), Inches(2.5), iv_text or "—", sz=_iv_sz, rgb=BLACK, line_spacing=1.1)
+
+    # ── Charts: Revenue/NI + P/E (side by side below thesis) ──
+    try:
+        from src.services.chart_builders import build_revenue_ni_chart, build_pe_chart
+
+        _chart_ann = _ann.get("announcement_dates") or []
+        _chart_periods = _ann.get("periods") or []
+        _chart_rev = _ann.get("net_sales") or []
+        _chart_ni = _ann.get("net_income") or []
+        _chart_pe = _vm.get("pe") or []
+        _chart_pe_periods = _vm.get("periods") or []
+
+        # Take last 6 periods (3yr history + 3yr forward)
+        _cp_start = max(0, len(_chart_periods) - 6)
+        _cp_slice = _chart_periods[_cp_start:]
+        _cr_slice = _chart_rev[_cp_start:_cp_start + len(_cp_slice)]
+        _cn_slice = _chart_ni[_cp_start:_cp_start + len(_cp_slice)]
+        _cd_slice = (_chart_ann[_cp_start:_cp_start + len(_cp_slice)] if _chart_ann else [])
+
+        # Actuals boundary
+        _boundary = -1
+        for _ci, _cd in enumerate(_cd_slice):
+            if _cd and str(_cd).strip() not in ("", "-", "None"):
+                _boundary = _ci
+
+        if _cp_slice and (any(_cr_slice) or any(_cn_slice)):
+            build_revenue_ni_chart(
+                s2, Inches(0.6), Inches(5.0), Inches(3.2), Inches(2.2),
+                _cp_slice, _cr_slice, _cn_slice, _boundary, curr,
+            )
+
+        # P/E chart
+        _pe_start = max(0, len(_chart_pe_periods) - 6)
+        _pe_slice = _chart_pe_periods[_pe_start:]
+        _pe_vals = _chart_pe[_pe_start:_pe_start + len(_pe_slice)]
+        _pe_valid = [p for p in _pe_vals if p is not None and isinstance(p, (int, float)) and p > 0]
+        _pe_avg = round(sum(_pe_valid) / len(_pe_valid), 1) if _pe_valid else None
+
+        if _pe_slice and any(_pe_vals):
+            build_pe_chart(
+                s2, Inches(3.95), Inches(5.0), Inches(3.0), Inches(2.2),
+                _pe_slice, _pe_vals, _pe_avg,
+            )
+    except Exception:
+        pass  # Charts are optional — don't break the report if they fail
 
     # Compute EBITDA margin for key expectations card
     _em_rev = cn.get("net_sales") or _ann_val("net_sales", _ann_fy_est)
@@ -1387,8 +1435,8 @@ def _write_preview_pptx_portrait(
     else:
         _em_display = "N/A*" if _is_bank_card else "—"
 
-    # Key Expectations — 3 cards
-    tx(s2, Inches(0.6), Inches(7.65), Inches(4), Inches(0.3), "Key Expectations", sz=14, bold=True, rgb=BLACK)
+    # Key Expectations — 3 cards (below charts)
+    tx(s2, Inches(0.6), Inches(7.4), Inches(4), Inches(0.3), "Key Expectations", sz=14, bold=True, rgb=BLACK)
     cw2 = Inches(2.0)
     cg = Inches(0.15)
     for i, (lb, va, chg) in enumerate([
@@ -1440,39 +1488,68 @@ def _write_preview_pptx_portrait(
     tx(s3, Inches(0.6), Inches(0.5), Inches(6), Inches(0.5), "Financial Snapshot", sz=26, bold=True, rgb=BLACK)
     rect(s3, Inches(0.6), Inches(1.0), Inches(2), Inches(0.06), GOLD)
 
-    if _has_quarterly:
-        hdrs = ["Metric", "Q prior (A)", "Q next (E)", "YoY %"]
-    elif _first_est_period:
-        _last_act = None
-        for _i2, _d2 in enumerate(_ann_dates_early):
-            if _d2 and str(_d2).strip() not in ("", "-", "None"):
-                _last_act = _ann_periods_early[_i2] if _i2 < len(_ann_periods_early) else None
-        hdrs = ["Metric", f"{_last_act or 'Prior'} (A)", f"{_first_est_period} (E)", "YoY %"]
-    else:
-        hdrs = ["Metric", "Prior (A)", "Current (E)", "YoY %"]
-    cws = [Inches(2.0), Inches(1.5), Inches(1.5), Inches(1.3)]
-    tbx = Inches(0.6)
-    tby = Inches(1.3)
-    rh = Inches(0.42)
-    x = tbx
-    for j, h in enumerate(hdrs):
-        rect(s3, x, tby, cws[j], rh, BLACK, RGBColor(0xDB, 0xE0, 0xE6))
-        tx(s3, x + Inches(0.1), tby + Inches(0.08), cws[j] - Inches(0.2), rh, h, sz=10, bold=True, rgb=WHITE)
-        x += cws[j]
-    rows = [(lb, pa, ce, yy) for lb, pa, ce, yy in rows if pa is not None or ce is not None]
-    for i, (lb, pa, ce, yy) in enumerate(rows):
-        y = tby + rh * (i + 1)
-        x = tbx
-        vals = [lb, pn(pa), pn(ce), pp(yy, True) if yy is not None else "—"]
-        for j, v in enumerate(vals):
-            fl = RGBColor(0xFA, 0xF8, 0xF3) if j == 2 else WHITE
-            rect(s3, x, y, cws[j], rh, fl, RGBColor(0xDB, 0xE0, 0xE6))
-            tx(s3, x + Inches(0.1), y + Inches(0.08), cws[j] - Inches(0.2), rh, str(v), sz=10, bold=(j == 0), rgb=BLACK)
-            x += cws[j]
+    # ── Expanded 6-column financial table (3yr history + 3yr forward) ──
+    try:
+        from src.services.chart_builders import build_expanded_table
+
+        _exp_periods = _ann_early.get("periods") or []
+        _exp_ann_dates = _ann_early.get("announcement_dates") or []
+        _exp_metrics = {
+            "net_sales": _ann_early.get("net_sales") or [],
+            "ebitda": _ann_early.get("ebitda") or [],
+            "ebit": _ann_early.get("ebit") or [],
+            "net_income": _ann_early.get("net_income") or [],
+            "eps": (_vm.get("eps") or []) if _vm else [],
+        }
+
+        if _exp_periods and any(any(v is not None for v in _exp_metrics[k]) for k in _exp_metrics):
+            _table_end_y = build_expanded_table(
+                s3, Inches(0.6), Inches(1.3),
+                _exp_periods, _exp_ann_dates, _exp_metrics,
+                curr, tx, rect,
+            )
+        else:
+            _table_end_y = Inches(1.3)
+    except Exception:
+        _table_end_y = Inches(1.3)
+
+    # If expanded table failed or had no data, fall back to simple 2-column table
+    if _table_end_y == Inches(1.3):
+        if _has_quarterly:
+            hdrs = ["Metric", "Q prior (A)", "Q next (E)", "YoY %"]
+        elif _first_est_period:
+            _last_act = None
+            for _i2, _d2 in enumerate(_ann_dates_early):
+                if _d2 and str(_d2).strip() not in ("", "-", "None"):
+                    _last_act = _ann_periods_early[_i2] if _i2 < len(_ann_periods_early) else None
+            hdrs = ["Metric", f"{_last_act or 'Prior'} (A)", f"{_first_est_period} (E)", "YoY %"]
+        else:
+            hdrs = ["Metric", "Prior (A)", "Current (E)", "YoY %"]
+        cws = [Inches(2.0), Inches(1.5), Inches(1.5), Inches(1.3)]
+        tbx = Inches(0.6)
+        tby = Inches(1.3)
+        rh = Inches(0.42)
+        x2 = tbx
+        for j, h in enumerate(hdrs):
+            rect(s3, x2, tby, cws[j], rh, BLACK, RGBColor(0xDB, 0xE0, 0xE6))
+            tx(s3, x2 + Inches(0.1), tby + Inches(0.08), cws[j] - Inches(0.2), rh, h, sz=10, bold=True, rgb=WHITE)
+            x2 += cws[j]
+        rows = [(lb, pa, ce, yy) for lb, pa, ce, yy in rows if pa is not None or ce is not None]
+        for i, (lb, pa, ce, yy) in enumerate(rows):
+            y2 = tby + rh * (i + 1)
+            x2 = tbx
+            vals = [lb, pn(pa), pn(ce), pp(yy, True) if yy is not None else "—"]
+            for j, v in enumerate(vals):
+                fl = RGBColor(0xFA, 0xF8, 0xF3) if j == 2 else WHITE
+                rect(s3, x2, y2, cws[j], rh, fl, RGBColor(0xDB, 0xE0, 0xE6))
+                tx(s3, x2 + Inches(0.1), y2 + Inches(0.08), cws[j] - Inches(0.2), rh, str(v), sz=10, bold=(j == 0), rgb=BLACK)
+                x2 += cws[j]
+        _table_end_y = tby + rh * (len(rows) + 1) + Inches(0.15)
 
     # Valuation Summary
-    tx(s3, Inches(0.6), Inches(4.2), Inches(6), Inches(0.4), "Valuation Summary", sz=22, bold=True, rgb=BLACK)
-    rect(s3, Inches(0.6), Inches(4.6), Inches(2), Inches(0.05), GOLD)
+    _val_y = max(_table_end_y + Inches(0.2), Inches(4.0))
+    tx(s3, Inches(0.6), _val_y, Inches(6), Inches(0.4), "Valuation Summary", sz=22, bold=True, rgb=BLACK)
+    rect(s3, Inches(0.6), _val_y + Inches(0.4), Inches(2), Inches(0.05), GOLD)
     _is_bank_p = bool(_company_attr(c, "is_bank", False))
     boxes = [
         ("P/E (FY26E)", f"{pe:.1f}x" if pe is not None else "—"),
@@ -1481,9 +1558,10 @@ def _write_preview_pptx_portrait(
         ("Div. Yield", f"{dy:.1f}%" if dy is not None else "—"),
     ]
     vbw = Inches(3.05)
+    _val_box_y = _val_y + Inches(0.6)
     for i, (lbl, val) in enumerate(boxes):
         x = Inches(0.6) + (Inches(3.2) if i % 2 else 0)
-        y = Inches(4.85) + (Inches(1.1) if i >= 2 else 0)
+        y = _val_box_y + (Inches(1.1) if i >= 2 else 0)
         rect(s3, x, y, vbw, Inches(0.95), WHITE, RGBColor(0xDB, 0xE0, 0xE6))
         rect(s3, x, y, Inches(0.06), Inches(0.95), GOLD)
         tx(s3, x + Inches(0.18), y + Inches(0.12), vbw - Inches(0.3), Inches(0.2), lbl, sz=10, rgb=MUTED)
