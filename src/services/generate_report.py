@@ -999,6 +999,7 @@ def _write_preview_pptx_portrait(
     quality_flags: list[str] | None = None,
     price_history: list[dict] | None = None,
     surprise_data: dict | None = None,
+    bloomberg_data: dict | None = None,
 ) -> None:
     """Portrait-oriented (7.5 x 13.33 in) PPTX with expanded space for qualitative writeup."""
     from pptx import Presentation
@@ -1590,7 +1591,75 @@ def _write_preview_pptx_portrait(
     if quality_flags:
         tx(s3, Inches(0.6), Inches(7.45), Inches(6), Inches(0.3), "Data Quality: " + "; ".join(quality_flags[:4]), sz=9, rgb=MUTED)
 
-    # ── Slide 4: Important Disclosures (dark, portrait) ───────
+    # ── Optional Slide: Broker Estimates (when Bloomberg data uploaded) ──
+    if bloomberg_data and bloomberg_data.get("brokers"):
+        s_bbg = prs.slides.add_slide(blank)
+        rect(s_bbg, 0, 0, W, prs.slide_height, WHITE)
+        tx(s_bbg, Inches(0.6), Inches(0.5), Inches(6), Inches(0.5), "Broker Estimates", sz=26, bold=True, rgb=BLACK)
+        rect(s_bbg, Inches(0.6), Inches(1.0), Inches(2), Inches(0.06), GOLD)
+
+        bbg_period = bloomberg_data.get("period", "")
+        bbg_ccy = bloomberg_data.get("currency", "")
+        tx(s_bbg, Inches(0.6), Inches(1.2), Inches(6), Inches(0.3),
+           f"Bloomberg consensus for {bbg_period} ({bbg_ccy})", sz=10, rgb=MUTED)
+
+        # Consensus summary
+        bbg_cons = bloomberg_data.get("consensus", {})
+        if bbg_cons:
+            _by = Inches(1.6)
+            for metric_key in ["revenue", "ebitda", "eps", "net_income"]:
+                mc = bbg_cons.get(metric_key, {})
+                if not mc:
+                    continue
+                label = mc.get("label", metric_key)
+                mean = mc.get("mean")
+                low = mc.get("low")
+                high = mc.get("high")
+                if mean is not None:
+                    range_str = f"Mean: {mean:,.1f}" if isinstance(mean, float) else f"Mean: {mean}"
+                    if low is not None and high is not None:
+                        range_str += f"  |  Range: {low:,.1f} – {high:,.1f}"
+                    tx(s_bbg, Inches(0.6), _by, Inches(6), Inches(0.3), f"{label}: {range_str}", sz=10, rgb=BLACK)
+                    _by += Inches(0.3)
+
+        # Broker table
+        brokers = bloomberg_data.get("brokers", [])
+        if brokers:
+            _ty = _by + Inches(0.3)
+            tx(s_bbg, Inches(0.6), _ty, Inches(6), Inches(0.3), "Individual Broker Estimates", sz=12, bold=True, rgb=BLACK)
+            _ty += Inches(0.35)
+
+            # Header
+            _cols = [Inches(2.2), Inches(1.2), Inches(1.2), Inches(1.2)]
+            _hx = Inches(0.6)
+            for j, h in enumerate(["Broker / Analyst", "Revenue", "EPS", "Net Income"]):
+                rect(s_bbg, _hx, _ty, _cols[j], Inches(0.3), BLACK, RGBColor(0xDB, 0xE0, 0xE6))
+                tx(s_bbg, _hx + Inches(0.05), _ty + Inches(0.05), _cols[j] - Inches(0.1), Inches(0.25), h, sz=8, bold=True, rgb=WHITE)
+                _hx += _cols[j]
+
+            for bi, broker in enumerate(brokers[:12]):
+                _ty += Inches(0.3)
+                _hx = Inches(0.6)
+                name = broker.get("name", "")
+                analyst = broker.get("analyst", "")
+                display_name = f"{name}" + (f" ({analyst})" if analyst else "")
+                est = broker.get("estimates", {})
+
+                vals = [display_name[:25],
+                        f"{est.get('revenue', 0):,.0f}" if est.get("revenue") else "—",
+                        f"{est.get('eps', 0):.2f}" if est.get("eps") else "—",
+                        f"{est.get('net_income', 0):,.0f}" if est.get("net_income") else "—"]
+
+                for j, v in enumerate(vals):
+                    bg = WHITE if bi % 2 == 0 else RGBColor(0xF5, 0xF5, 0xF5)
+                    rect(s_bbg, _hx, _ty, _cols[j], Inches(0.3), bg, RGBColor(0xDB, 0xE0, 0xE6))
+                    tx(s_bbg, _hx + Inches(0.05), _ty + Inches(0.05), _cols[j] - Inches(0.1), Inches(0.25), v, sz=8, rgb=BLACK)
+                    _hx += _cols[j]
+
+        tx(s_bbg, Inches(0.6), Inches(12.5), Inches(6), Inches(0.3),
+           f"Source: Bloomberg Terminal MODL export ({bloomberg_data.get('metadata', {}).get('filename', '')})", sz=8, rgb=MUTED)
+
+    # ── Slide 4 (or 5): Important Disclosures (dark, portrait) ───────
     s4 = prs.slides.add_slide(blank)
     rect(s4, 0, 0, W, prs.slide_height, DARK)
     tx(s4, Inches(0), Inches(1.0), W, Inches(0.6), "Important Disclosures", sz=28, bold=True, rgb=LIGHT, al=PP_ALIGN.CENTER)
@@ -1621,7 +1690,7 @@ def _write_preview_pptx_portrait(
     prs.save(str(path))
 
 
-def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | None = None, data_warnings: list[str] | None = None, price_history: list[dict] | None = None, surprise_data: dict | None = None) -> StepResult:
+def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | None = None, data_warnings: list[str] | None = None, price_history: list[dict] | None = None, surprise_data: dict | None = None, bloomberg_data: dict | None = None) -> StepResult:
     with StepTimer() as t:
         try:
             iv_style = _iv_fallback_style()
@@ -1646,7 +1715,7 @@ def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | 
             # Add automated data validation warnings
             if data_warnings:
                 quality_flags.extend(data_warnings)
-            _write_preview_pptx_portrait(payload, out_path, memo_data, iv_text, watch, quality_flags or None, price_history=price_history, surprise_data=surprise_data)
+            _write_preview_pptx_portrait(payload, out_path, memo_data, iv_text, watch, quality_flags or None, price_history=price_history, surprise_data=surprise_data, bloomberg_data=bloomberg_data)
             return StepResult(step_name=STEP, status=Status.SUCCESS, source="pptx", message=f"Report saved → {out_path}", data=str(out_path), elapsed_seconds=t.elapsed)
         except Exception as exc:
             return StepResult(step_name=STEP, status=Status.FAILED, source="pptx", message="Report generation failed", error_detail=str(exc), elapsed_seconds=t.elapsed)

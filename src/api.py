@@ -225,13 +225,13 @@ def _readiness_error_detail(results: list) -> dict | None:
     return None
 
 
-def _run_preview_and_response(ticker: str, skip_llm: bool = True, *, raise_on_readiness: bool = True) -> dict:
+def _run_preview_and_response(ticker: str, skip_llm: bool = True, *, raise_on_readiness: bool = True, bloomberg_data: dict | None = None) -> dict:
     """Run pipeline and return frontend-shaped response: report row + payload + steps."""
     from src.pipeline import run_preview
     from src.models.step_result import Status
     from src.storage.db import load_company, load_run
 
-    run_id, results = run_preview(ticker, skip_llm=skip_llm)
+    run_id, results = run_preview(ticker, skip_llm=skip_llm, bloomberg_data=bloomberg_data)
     err = _readiness_error_detail(results)
     if err and raise_on_readiness:
         raise HTTPException(status_code=422, detail=err)
@@ -306,6 +306,47 @@ def create_report(req: CreateReportRequest):
         raise HTTPException(status_code=400, detail="Invalid ticker format")
     try:
         data = _run_preview_and_response(ticker, skip_llm=req.skip_llm)
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e).strip() or repr(e)
+        raise HTTPException(status_code=500, detail=f"Report creation failed: {msg}")
+
+
+from fastapi import UploadFile, File, Form
+
+
+@app.post("/api/reports/with-bloomberg")
+async def create_report_with_bloomberg(
+    ticker: str = Form(...),
+    skip_llm: bool = Form(True),
+    bloomberg_file: UploadFile | None = File(None),
+):
+    """Create a report with optional Bloomberg Excel data merged in.
+
+    Upload a MODL template Excel from Bloomberg Terminal.
+    Bloomberg data becomes PRIMARY when present, MS is fallback.
+    """
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker is required")
+    if not _TICKER_RE.match(ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker format")
+
+    bbg_data = None
+    if bloomberg_file and bloomberg_file.filename:
+        try:
+            content = await bloomberg_file.read()
+            from src.services.bloomberg_parser import parse_bloomberg_excel
+            bbg_data = parse_bloomberg_excel(content, bloomberg_file.filename)
+            if bbg_data.get("warnings"):
+                pass  # Warnings logged inside parser
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Bloomberg file parse error: {e}")
+
+    try:
+        data = _run_preview_and_response(ticker, skip_llm=skip_llm, bloomberg_data=bbg_data)
         return data
     except HTTPException:
         raise

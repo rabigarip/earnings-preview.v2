@@ -28,8 +28,8 @@ from src.storage.db import save_run
 logger = logging.getLogger(__name__)
 
 
-def run_preview(ticker: str, *, skip_llm: bool = False) -> tuple[str, list[StepResult]]:
-    """Returns (run_id, step_results)."""
+def run_preview(ticker: str, *, skip_llm: bool = False, bloomberg_data: dict | None = None) -> tuple[str, list[StepResult]]:
+    """Returns (run_id, step_results). Optional bloomberg_data merged when present."""
     run_id = uuid.uuid4().hex[:8]
     t0 = datetime.now(timezone.utc)
     results: list[StepResult] = []
@@ -250,7 +250,7 @@ def run_preview(ticker: str, *, skip_llm: bool = False) -> tuple[str, list[StepR
         pass
 
     # ── 12. Generate report (.pptx) ──────────────────────────
-    r = generate_report.run(payload, memo_data=memo_data, qa_audit=qa_audit, data_warnings=data_warnings, price_history=price_history, surprise_data=surprise_data)
+    r = generate_report.run(payload, memo_data=memo_data, qa_audit=qa_audit, data_warnings=data_warnings, price_history=price_history, surprise_data=surprise_data, bloomberg_data=bloomberg_data)
     _collect(r, results)
 
     _finish(run_id, ticker, t0, results)
