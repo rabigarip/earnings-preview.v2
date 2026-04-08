@@ -997,6 +997,8 @@ def _write_preview_pptx_portrait(
     iv_text: str,
     watch: list[str],
     quality_flags: list[str] | None = None,
+    price_history: list[dict] | None = None,
+    surprise_data: dict | None = None,
 ) -> None:
     """Portrait-oriented (7.5 x 13.33 in) PPTX with expanded space for qualitative writeup."""
     from pptx import Presentation
@@ -1389,8 +1391,8 @@ def _write_preview_pptx_portrait(
         _chart_periods = _ann.get("periods") or []
         _chart_rev = _ann.get("net_sales") or []
         _chart_ni = _ann.get("net_income") or []
-        _chart_pe = _vm.get("pe") or []
-        _chart_pe_periods = _vm.get("periods") or []
+        _chart_pe = vm.get("pe") or []
+        _chart_pe_periods = vm.get("periods") or []
 
         # Take last 6 periods (3yr history + 3yr forward)
         _cp_start = max(0, len(_chart_periods) - 6)
@@ -1567,7 +1569,22 @@ def _write_preview_pptx_portrait(
         tx(s3, x + Inches(0.18), y + Inches(0.12), vbw - Inches(0.3), Inches(0.2), lbl, sz=10, rgb=MUTED)
         tx(s3, x + Inches(0.18), y + Inches(0.4), vbw - Inches(0.3), Inches(0.35), val, sz=22, bold=True, rgb=GOLD)
 
-    tx(s3, Inches(0.6), Inches(7.2), Inches(6), Inches(0.3), f"Actuals: company filings via Yahoo Finance  |  Estimates: MarketScreener analyst consensus as of {datetime.now().strftime('%d %b %Y')}", sz=9, rgb=MUTED)
+    # ── Price chart + Surprise history (below valuation) ──
+    try:
+        from src.services.chart_builders import build_price_chart, build_surprise_summary
+        if price_history and len(price_history) >= 20:
+            _ph_dates = [p["date"] for p in price_history]
+            _ph_prices = [p["close"] for p in price_history]
+            build_price_chart(s3, Inches(0.6), Inches(7.8), Inches(3.8), Inches(2.0), _ph_dates, _ph_prices, tk)
+            tx(s3, Inches(0.6), Inches(7.55), Inches(3.8), Inches(0.25), "1-Year Price", sz=9, bold=True, rgb=MUTED)
+
+        if surprise_data and surprise_data.get("total_quarters", 0) > 0:
+            build_surprise_summary(s3, Inches(4.6), Inches(7.8), Inches(2.3), Inches(0.75), surprise_data, tx, rect)
+    except Exception:
+        pass
+
+    _src_y = Inches(10.0) if (price_history and len(price_history) >= 20) else Inches(7.2)
+    tx(s3, Inches(0.6), _src_y, Inches(6), Inches(0.3), f"Actuals: company filings via Yahoo Finance  |  Estimates: MarketScreener analyst consensus as of {datetime.now().strftime('%d %b %Y')}", sz=9, rgb=MUTED)
     if _is_bank_p:
         tx(s3, Inches(0.6), Inches(7.4), Inches(6), Inches(0.3), "* EBITDA / EV-EBITDA not applicable for banks and financial institutions", sz=8, rgb=MUTED)
     if quality_flags:
@@ -1604,7 +1621,7 @@ def _write_preview_pptx_portrait(
     prs.save(str(path))
 
 
-def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | None = None, data_warnings: list[str] | None = None) -> StepResult:
+def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | None = None, data_warnings: list[str] | None = None, price_history: list[dict] | None = None, surprise_data: dict | None = None) -> StepResult:
     with StepTimer() as t:
         try:
             iv_style = _iv_fallback_style()
@@ -1629,7 +1646,7 @@ def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | 
             # Add automated data validation warnings
             if data_warnings:
                 quality_flags.extend(data_warnings)
-            _write_preview_pptx_portrait(payload, out_path, memo_data, iv_text, watch, quality_flags or None)
+            _write_preview_pptx_portrait(payload, out_path, memo_data, iv_text, watch, quality_flags or None, price_history=price_history, surprise_data=surprise_data)
             return StepResult(step_name=STEP, status=Status.SUCCESS, source="pptx", message=f"Report saved → {out_path}", data=str(out_path), elapsed_seconds=t.elapsed)
         except Exception as exc:
             return StepResult(step_name=STEP, status=Status.FAILED, source="pptx", message="Report generation failed", error_detail=str(exc), elapsed_seconds=t.elapsed)

@@ -96,8 +96,11 @@ def build_revenue_ni_chart(
     val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
     val_axis.format.line.fill.background()
 
-    # Remove chart border
-    chart_frame.line.fill.background()
+    # Remove chart border (GraphicFrame may not support .line)
+    try:
+        chart_frame.line.fill.background()
+    except AttributeError:
+        pass
 
 
 def build_pe_chart(
@@ -150,8 +153,11 @@ def build_pe_chart(
     val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
     val_axis.format.line.fill.background()
 
-    # Remove chart border
-    chart_frame.line.fill.background()
+    # Remove chart border (GraphicFrame may not support .line)
+    try:
+        chart_frame.line.fill.background()
+    except AttributeError:
+        pass
 
     # Add 5yr average annotation as a textbox
     if five_yr_avg is not None and five_yr_avg > 0:
@@ -168,6 +174,124 @@ def build_pe_chart(
             p.runs[0].font.size = Pt(7)
             p.runs[0].font.color.rgb = RGBColor(0xAA, 0x33, 0xAA)
             p.runs[0].font.bold = True
+
+
+def build_price_chart(
+    slide,
+    x, y, w, h,
+    dates: list[str],
+    prices: list[float],
+    ticker: str = "",
+) -> None:
+    """1-year daily price line chart.
+
+    Args:
+        slide: python-pptx slide object
+        x, y, w, h: position and size
+        dates: ["2025-04-07", ...] (daily)
+        prices: close prices
+        ticker: for chart title
+    """
+    if not dates or not prices or len(dates) < 10:
+        return
+
+    # Downsample to ~50 points for readability
+    step = max(1, len(dates) // 50)
+    sampled_dates = dates[::step]
+    sampled_prices = prices[::step]
+
+    chart_data = CategoryChartData()
+    # Show only every 10th date label to avoid crowding
+    labels = []
+    for i, d in enumerate(sampled_dates):
+        if i % 10 == 0:
+            labels.append(d[5:])  # "04-07" format
+        else:
+            labels.append("")
+    chart_data.categories = labels
+    chart_data.add_series("Price", sampled_prices)
+
+    chart_frame = slide.shapes.add_chart(
+        XL_CHART_TYPE.LINE, x, y, w, h, chart_data
+    )
+    chart = chart_frame.chart
+    chart.has_legend = False
+
+    # Line styling
+    series = chart.series[0]
+    series.format.line.color.rgb = DARK_BLUE
+    series.format.line.width = Pt(1.5)
+    series.smooth = True
+
+    # Axis styling
+    cat_axis = chart.category_axis
+    cat_axis.tick_labels.font.size = Pt(6)
+    cat_axis.tick_labels.font.color.rgb = MUTED_GRAY
+    cat_axis.has_major_gridlines = False
+    cat_axis.format.line.fill.background()
+
+    val_axis = chart.value_axis
+    val_axis.tick_labels.font.size = Pt(7)
+    val_axis.tick_labels.font.color.rgb = MUTED_GRAY
+    val_axis.has_major_gridlines = True
+    val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
+    val_axis.format.line.fill.background()
+
+    chart_frame.line.fill.background()
+
+
+def build_surprise_summary(
+    slide,
+    x, y, w, h,
+    surprise_data: dict,
+    tx_fn,
+    rect_fn,
+) -> None:
+    """Render a compact surprise history summary box.
+
+    Args:
+        surprise_data: output from compute_surprise_history()
+        tx_fn, rect_fn: helper functions from generate_report
+    """
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+    from pptx.enum.text import PP_ALIGN
+
+    if not surprise_data or not surprise_data.get("total_quarters"):
+        return
+
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+    BLACK = RGBColor(0x1F, 0x23, 0x28)
+    GREEN = RGBColor(0x1A, 0x7F, 0x37)
+    RED = RGBColor(0xCF, 0x22, 0x22)
+    MUTED = RGBColor(0x8B, 0x94, 0x9E)
+    BORDER = RGBColor(0xDB, 0xE0, 0xE6)
+
+    rect_fn(slide, x, y, w, h, WHITE, BORDER)
+
+    tx_fn(slide, x + Inches(0.1), y + Inches(0.05), w - Inches(0.2), Inches(0.18),
+          "Earnings Track Record", sz=8, bold=True, rgb=MUTED)
+
+    summary = surprise_data.get("summary", "")
+    beat = surprise_data.get("beat_count", 0)
+    miss = surprise_data.get("miss_count", 0)
+    color = GREEN if beat > miss else RED if miss > beat else BLACK
+
+    tx_fn(slide, x + Inches(0.1), y + Inches(0.25), w - Inches(0.2), Inches(0.25),
+          summary, sz=9, bold=True, rgb=color)
+
+    # Show last 4 quarters detail
+    details = (surprise_data.get("details") or [])[-4:]
+    if details:
+        detail_parts = []
+        for d in details:
+            spr = d.get("surprise_pct")
+            if spr is not None:
+                arrow = "▲" if spr > 1 else "▼" if spr < -1 else "●"
+                detail_parts.append(f"{d['quarter']}: {arrow}{spr:+.1f}%")
+        if detail_parts:
+            tx_fn(slide, x + Inches(0.1), y + Inches(0.48), w - Inches(0.2), Inches(0.2),
+                  "  ".join(detail_parts), sz=7, rgb=MUTED)
 
 
 def build_expanded_table(

@@ -114,6 +114,14 @@ def run_preview(ticker: str, *, skip_llm: bool = False) -> tuple[str, list[StepR
     news_data = r.data if isinstance(r.data, dict) else {}
     news_items = news_data.get("items") or (r.data if isinstance(r.data, list) else [])
 
+    # ── 6b. Fetch price history (for chart) ─────────────────────
+    price_history = []
+    try:
+        from src.providers.yahoo import fetch_price_history
+        price_history = fetch_price_history(ticker, period="1y") or []
+    except Exception:
+        pass
+
     # ── 7. Reconcile + derived metrics ────────────────────────
     r = reconcile(ticker, company, quarterly, consensus, quote=quote)
     _collect(r, results)
@@ -224,7 +232,16 @@ def run_preview(ticker: str, *, skip_llm: bool = False) -> tuple[str, list[StepR
         except Exception:
             pass
 
-    # ── 11b. Automated data validation ─────────────────────────
+    # ── 11b. Surprise history ────────────────────────────────────
+    surprise_data = {}
+    try:
+        from src.services.surprise_history import compute_surprise_history
+        _qrt = getattr(payload, "ms_quarterly_results_table", None)
+        surprise_data = compute_surprise_history(_qrt, metric="net_income")
+    except Exception:
+        pass
+
+    # ── 11c. Automated data validation ─────────────────────────
     data_warnings: list[str] = []
     try:
         from src.services.data_validation import validate_report_data
@@ -233,7 +250,7 @@ def run_preview(ticker: str, *, skip_llm: bool = False) -> tuple[str, list[StepR
         pass
 
     # ── 12. Generate report (.pptx) ──────────────────────────
-    r = generate_report.run(payload, memo_data=memo_data, qa_audit=qa_audit, data_warnings=data_warnings)
+    r = generate_report.run(payload, memo_data=memo_data, qa_audit=qa_audit, data_warnings=data_warnings, price_history=price_history, surprise_data=surprise_data)
     _collect(r, results)
 
     _finish(run_id, ticker, t0, results)

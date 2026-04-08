@@ -104,6 +104,31 @@ def fetch_quote(ticker: str) -> QuoteSnapshot | None:
     return _yahoo_retry(_get)
 
 
+# ── Price History ────────────────────────────────────────────
+
+def fetch_price_history(ticker: str, period: str = "1y") -> list[dict]:
+    """Fetch daily close prices for the given period.
+
+    Returns [{"date": "2025-04-07", "close": 123.45}, ...] or empty list.
+    """
+    try:
+        yt = yf.Ticker(ticker)
+        hist = yt.history(period=period)
+        if hist is None or hist.empty:
+            return []
+        result = []
+        for date, row in hist.iterrows():
+            close = row.get("Close")
+            if close is not None:
+                result.append({
+                    "date": date.strftime("%Y-%m-%d"),
+                    "close": round(float(close), 2),
+                })
+        return result
+    except Exception:
+        return []
+
+
 # ── Financials ────────────────────────────────────────────────
 
 _REV  = ["Total Revenue", "TotalRevenue", "Revenue"]
