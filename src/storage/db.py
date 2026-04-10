@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS actuals (
     created_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (ticker, period)
 );
+
+CREATE TABLE IF NOT EXISTS earnings_calendar (
+    ticker TEXT PRIMARY KEY,
+    company_name TEXT DEFAULT '',
+    country TEXT DEFAULT '',
+    sector TEXT DEFAULT '',
+    next_earnings_date TEXT,
+    next_earnings_label TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -504,3 +515,49 @@ def load_run(run_id: str) -> dict | None:
     d["step_results"] = steps
     d["warnings"] = sum(1 for s in steps if s.get("status") in ("partial", "failed"))
     return d
+
+
+# ── Earnings Calendar ────────────────────────────────────────
+
+def upsert_earnings_date(ticker: str, company_name: str, country: str, sector: str,
+                         next_earnings_date: str | None, next_earnings_label: str = "",
+                         source: str = "") -> None:
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO earnings_calendar (ticker, company_name, country, sector, next_earnings_date, next_earnings_label, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(ticker) DO UPDATE SET
+            company_name = excluded.company_name,
+            country = excluded.country,
+            sector = excluded.sector,
+            next_earnings_date = CASE WHEN excluded.next_earnings_date IS NOT NULL AND excluded.next_earnings_date != '' THEN excluded.next_earnings_date ELSE earnings_calendar.next_earnings_date END,
+            next_earnings_label = CASE WHEN excluded.next_earnings_label != '' THEN excluded.next_earnings_label ELSE earnings_calendar.next_earnings_label END,
+            source = CASE WHEN excluded.source != '' THEN excluded.source ELSE earnings_calendar.source END,
+            updated_at = CURRENT_TIMESTAMP
+    """, (ticker, company_name, country, sector, next_earnings_date, next_earnings_label, source))
+    conn.commit()
+    conn.close()
+
+
+def list_earnings_calendar(country: str | None = None, sector: str | None = None,
+                           days_ahead: int = 90) -> list[dict]:
+    """Return upcoming earnings sorted by date."""
+    conn = get_conn()
+    query = """
+        SELECT ticker, company_name, country, sector, next_earnings_date, next_earnings_label, source, updated_at
+        FROM earnings_calendar
+        WHERE next_earnings_date IS NOT NULL AND next_earnings_date != ''
+          AND next_earnings_date >= date('now')
+          AND next_earnings_date <= date('now', '+' || ? || ' days')
+    """
+    params: list = [days_ahead]
+    if country:
+        query += " AND country = ?"
+        params.append(country)
+    if sector:
+        query += " AND sector = ?"
+        params.append(sector)
+    query += " ORDER BY next_earnings_date ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

@@ -317,11 +317,13 @@ def create_report(req: CreateReportRequest):
 from fastapi import UploadFile, File, Form
 
 
+from typing import Optional
+
 @app.post("/api/reports/with-bloomberg")
 async def create_report_with_bloomberg(
     ticker: str = Form(...),
     skip_llm: bool = Form(True),
-    bloomberg_file: UploadFile | None = File(None),
+    bloomberg_file: Optional[UploadFile] = File(None),
 ):
     """Create a report with optional Bloomberg Excel data merged in.
 
@@ -417,6 +419,40 @@ def batch_preview_api(req: BatchPreviewRequest):
     return {"results": results}
 
 
+# ─── Earnings Calendar ───────────────────────────────────────────────────────
+
+@app.get("/api/calendar")
+def earnings_calendar_api(country: str = "", sector: str = "", days: int = 90):
+    """Return upcoming earnings dates for all seeded tickers."""
+    from src.storage.db import list_earnings_calendar
+    events = list_earnings_calendar(country=country, sector=sector, days_ahead=days)
+    return {"events": events, "count": len(events)}
+
+
+@app.post("/api/calendar/sync")
+def sync_calendar_api():
+    """Trigger a full calendar sync for all seeded tickers. Slow (~5-10 min)."""
+    import threading
+    from src.services.calendar_sync import sync_all_calendars
+    # Run in background to avoid timeout
+    def _sync():
+        sync_all_calendars(batch_size=30, delay=0.3)
+    t = threading.Thread(target=_sync, daemon=True)
+    t.start()
+    return {"status": "started", "message": "Calendar sync running in background"}
+
+
+@app.post("/api/calendar/sync/{ticker}")
+def sync_calendar_ticker_api(ticker: str):
+    """Sync earnings date for a single ticker."""
+    ticker = ticker.strip().upper()
+    from src.services.calendar_sync import sync_calendar_for_ticker
+    result = sync_calendar_for_ticker(ticker)
+    if result:
+        return {"status": "ok", **result}
+    return {"status": "no_date", "ticker": ticker}
+
+
 # ─── One site: serve frontend from static/ when present ─────────────────────
 
 if SERVE_FRONTEND:
@@ -426,9 +462,8 @@ if SERVE_FRONTEND:
 
     @app.get("/{path:path}")
     def serve_spa(path: str):
-        """SPA fallback: serve index.html for non-API routes (e.g. /reports/123)."""
-        if path.startswith("api/") or path == "api":
-            raise HTTPException(status_code=404, detail="Not found")
-        if path.startswith("docs") or path.startswith("openapi") or path == "health":
+        """SPA fallback: serve index.html for non-API routes."""
+        # Let all API routes through — they're handled by FastAPI router
+        if path.startswith("api") or path.startswith("docs") or path.startswith("openapi") or path == "health":
             raise HTTPException(status_code=404, detail="Not found")
         return FileResponse(STATIC_INDEX, media_type="text/html")

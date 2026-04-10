@@ -72,7 +72,10 @@ function errorToUserMessage(e) {
   return toErrorText(e);
 }
 
+import CalendarPage from "./CalendarPage";
+
 export default function App() {
+  const [tab, setTab] = useState("generate"); // "generate" | "calendar"
   const [ticker, setTicker] = useState("");
   const [skipLlm, setSkipLlm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -191,8 +194,36 @@ export default function App() {
     }
   };
 
+  const handleCalendarGenerate = useCallback((tk) => {
+    setTicker(tk);
+    setTab("generate");
+  }, []);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center px-4 py-8">
+      {/* Tab navigation */}
+      <div className="flex gap-1 mb-6 bg-slate-900 rounded-lg p-1 border border-slate-800">
+        <button
+          onClick={() => setTab("generate")}
+          className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
+            tab === "generate" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          Generate Report
+        </button>
+        <button
+          onClick={() => setTab("calendar")}
+          className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
+            tab === "calendar" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"
+          }`}
+        >
+          Earnings Calendar
+        </button>
+      </div>
+
+      {tab === "calendar" ? (
+        <CalendarPage onGenerate={handleCalendarGenerate} />
+      ) : (
       <div className="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-xl p-6">
         <h1 className="text-2xl font-semibold mb-2">Download Earnings Report</h1>
         <p className="text-sm text-slate-400 mb-6">
@@ -311,6 +342,7 @@ export default function App() {
         {status ? <p className="mt-4 text-sm text-emerald-400">{status}</p> : null}
         {error ? <p className="mt-2 text-sm text-rose-400">{error}</p> : null}
       </div>
+      )}
     </div>
   );
 }
