@@ -196,6 +196,22 @@ def get_effective_marketscreener_slug(company: dict) -> str:
     return (company.get("marketscreener_id") or "").strip()
 
 
+MS_CACHE_TTL_DAYS = 30  # Re-validate MS slug every 30 days
+
+
+def _is_ms_cache_stale(row: dict) -> bool:
+    """Check if MS mapping needs re-validation based on TTL."""
+    last_verified = (row.get("last_verified") or "").strip()
+    if not last_verified:
+        return True
+    try:
+        verified_dt = datetime.fromisoformat(last_verified.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - verified_dt).days
+        return age_days > MS_CACHE_TTL_DAYS
+    except (ValueError, TypeError):
+        return True
+
+
 def ensure_marketscreener_cached(ticker: str, company: dict | None = None) -> dict | None:
     row = company if company is not None else load_company(ticker)
     if row is None:
@@ -205,8 +221,9 @@ def ensure_marketscreener_cached(ticker: str, company: dict | None = None) -> di
         return row
     url = (row.get("marketscreener_company_url") or "").strip()
     status = (row.get("marketscreener_status") or "").strip().lower()
-    if url and status == "ok":
+    if url and status == "ok" and not _is_ms_cache_stale(row):
         return row
+    # Cache is missing, stale status, or TTL expired — re-resolve
     candidates = list_marketscreener_candidates_for_isin(isin, max_results=8)
     if not candidates:
         return row

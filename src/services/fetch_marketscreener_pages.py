@@ -67,6 +67,16 @@ def run(ticker: str, company: CompanyMaster) -> StepResult:
                     if not vr.valid:
                         _reject(ticker, reason=vr.rejection_reason or "search_candidate_validation_failed", status="needs_review")
                         slug = ""
+                        # Second attempt: invalidate cache and try ISIN resolution fresh
+                        if company.isin:
+                            try:
+                                from src.services.entity_resolution import invalidate_marketscreener_cache
+                                invalidate_marketscreener_cache(ticker)
+                                re_updated = ensure_marketscreener_cached(ticker, company.model_dump())
+                                if re_updated:
+                                    slug = get_effective_marketscreener_slug(re_updated)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
             if not slug:

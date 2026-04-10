@@ -155,6 +155,29 @@ def validate_report_data(payload, memo_data: dict | None = None) -> list[str]:
     if not has_any_table_data:
         warnings.append("No financial data from any source — report will have empty tables")
 
+    # ── 14. Cross-validate MS vs Yahoo revenue (latest actual year) ──
+    ya_actuals = getattr(payload, "annual_actuals", None) or []
+    ms_rev_list = ann.get("net_sales") or []
+    ms_ann_dates = ann.get("announcement_dates") or []
+    if ya_actuals and ms_rev_list:
+        # Find latest actual in MS (has announcement date)
+        ms_latest_actual_rev = None
+        for i in range(len(ms_ann_dates) - 1, -1, -1):
+            if ms_ann_dates[i] and str(ms_ann_dates[i]).strip() not in ("", "-", "None"):
+                if i < len(ms_rev_list) and ms_rev_list[i] is not None:
+                    ms_latest_actual_rev = ms_rev_list[i]
+                    break
+        # Compare with Yahoo latest actual (in raw units → scale to millions)
+        if ms_latest_actual_rev and ya_actuals:
+            ya_latest = sorted(ya_actuals, key=lambda p: p.period_label, reverse=True)[0]
+            ya_rev = ya_latest.revenue
+            if ya_rev and ms_latest_actual_rev > 0:
+                # Yahoo is in raw units, MS may be in millions
+                ya_rev_M = ya_rev / 1e6 if ya_rev > 1e9 else ya_rev
+                ratio = ya_rev_M / ms_latest_actual_rev if ms_latest_actual_rev != 0 else 0
+                if ratio > 0 and (ratio > 1.5 or ratio < 0.67):
+                    warnings.append(f"MS/Yahoo revenue diverge: MS={ms_latest_actual_rev:,.0f}M vs Yahoo={ya_rev_M:,.0f}M — verify units")
+
     if warnings:
         log.warning("Data validation warnings for %s: %s", ticker, "; ".join(warnings))
 
