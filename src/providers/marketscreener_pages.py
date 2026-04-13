@@ -957,6 +957,14 @@ def fetch_dividend_eps_page(base_company_url: str, cache_key_prefix: str | None 
         return _empty_dividend_payload(url, status), status
     log.info("[MarketScreener] Fetching /valuation-dividend/ page... SUCCESS")
 
+    # Extract unit currency from page
+    unit_currency = ""
+    page_text = soup.get_text(" ", strip=True) if soup else ""
+    for ccy in ("SAR", "USD", "EUR", "GBP", "HKD", "CNY", "OMR", "AED", "QAR", "KWD", "BHD", "TRY", "IDR", "MYR", "THB", "INR", "PHP", "VND", "EGP", "ZAR", "BRL", "MXN"):
+        if ccy in page_text:
+            unit_currency = ccy
+            break
+
     period_headers, row_data = _extract_period_header_and_rows(soup, "annual")
     if not period_headers:
         # Try first table with Fiscal Period
