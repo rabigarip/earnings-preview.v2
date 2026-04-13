@@ -7665,6 +7665,21 @@
     "notes": ""
   },
   {
+    "ticker": "SPINNEYS.AE",
+    "company_name": "Spinneys 1961 Holding",
+    "company_name_long": "Spinneys 1961 Holding plc",
+    "exchange": "DFM",
+    "country": "UAE",
+    "currency": "AED",
+    "isin": "AEE01377S248",
+    "marketscreener_id": "",
+    "zawya_slug": "",
+    "sector": "Consumer Staples",
+    "industry": "Food Retail",
+    "is_bank": false,
+    "notes": ""
+  },
+  {
     "ticker": "NBB.BH",
     "company_name": "National Bank of Bahrain",
     "company_name_long": "National Bank of Bahrain BSC",

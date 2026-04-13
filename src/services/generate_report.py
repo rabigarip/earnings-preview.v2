@@ -526,7 +526,7 @@ def _write_preview_pptx(
     spr = None  # Always recalculate from live price for accuracy
     mcap = q.market_cap if q else None
     # Use MS price as fallback when Yahoo has no price (frontier markets)
-    _live_price = (q.price if q else None) or _ms_price
+    _live_price = (getattr(q, "price", None) if q else None) or _ms_price
     if not mcap and _ms_price:
         # Estimate market cap from MS last_close × shares (from valuation page)
         _shares = None
@@ -581,6 +581,11 @@ def _write_preview_pptx(
     # Use announcement dates to determine actual vs estimate boundary:
     # If announcement date exists (not "-" or empty), it's an actual.
     _ann_dates = _ann.get("announcement_dates") or []
+    _first_est_period = None
+    for _i_hdr, _d_hdr in enumerate(_ann_dates):
+        if not _d_hdr or str(_d_hdr).strip() in ("", "-", "None"):
+            _first_est_period = _ann_periods[_i_hdr] if _i_hdr < len(_ann_periods) else None
+            break
     for _ai, _ap in enumerate(_ann_periods):
         _has_ann_date = (_ai < len(_ann_dates) and _ann_dates[_ai] and str(_ann_dates[_ai]).strip() not in ("", "-", "None"))
         if _has_ann_date:
@@ -900,9 +905,9 @@ def _write_preview_pptx(
         hdrs = ["Metric", "Q prior (A)", "Q next (E)", "YoY %"]
     elif _first_est_period:
         _last_act = None
-        for _i2, _d2 in enumerate(_ann_dates_early):
+        for _i2, _d2 in enumerate(_ann_dates):
             if _d2 and str(_d2).strip() not in ("", "-", "None"):
-                _last_act = _ann_periods_early[_i2] if _i2 < len(_ann_periods_early) else None
+                _last_act = _ann_periods[_i2] if _i2 < len(_ann_periods) else None
         hdrs = ["Metric", f"{_last_act or 'Prior'} (A)", f"{_first_est_period} (E)", "YoY %"]
     else:
         hdrs = ["Metric", "Prior (A)", "Current (E)", "YoY %"]
@@ -1115,7 +1120,8 @@ def _write_preview_pptx_portrait(
     name = getattr(c, "company_name", None) or _company_attr(c, "company_name", "")
     tk = getattr(c, "ticker", None) or _company_attr(c, "ticker", "")
     sec = f"{_company_attr(c, 'sector', '')} / {_company_attr(c, 'industry', '')}".strip(" /") or "—"
-    curr = (getattr(c, "currency", None) or "USD").strip()
+    _listing_ccy = (getattr(c, "currency", None) or "USD").strip()
+    curr = _listing_ccy
     if not curr or curr == "USD":
         curr = _ms_ccy or curr
     # Determine report type: quarterly preview vs annual consensus
@@ -1137,6 +1143,9 @@ def _write_preview_pptx_portrait(
         if not _d or str(_d).strip() in ("", "-", "None"):
             _first_est_period = _ann_periods_early[_i] if _i < len(_ann_periods_early) else None
             break
+    _stmt_unit = (_af_early.get("unit_currency") or "").strip().upper()
+    _fin_ccy = _stmt_unit or _listing_ccy
+    _price_ccy = (_ms_ccy or "").strip().upper() or _listing_ccy
 
     if _has_quarterly_early:
         pshort = (memo_data or {}).get("preview_short") or memo.get("preview_quarter_short") or f"{(datetime.now().month - 1) // 3 + 1}Q{datetime.now().strftime('%y')}"
@@ -1175,7 +1184,7 @@ def _write_preview_pptx_portrait(
         if tgt is None and getattr(q, "target_mean_price", None):
             tgt = q.target_mean_price
     # Compute upside from best available price (Yahoo live → MS last_close)
-    _live_price = (q.price if q else None) or _ms_price
+    _live_price = (getattr(q, "price", None) if q else None) or _ms_price
     if tgt is not None and _live_price and _live_price > 0:
         try:
             spr = round((float(tgt) - _live_price) / _live_price * 100, 1)
@@ -1183,13 +1192,11 @@ def _write_preview_pptx_portrait(
             spr = memo.get("spread_pct") or cs.get("upside_to_average_target_pct")
 
     ts_val = pn(tgt)
-    if curr and ts_val != "—":
-        ts_val = f"{curr} {ts_val}"
+    if _price_ccy and ts_val != "—":
+        ts_val = f"{_price_ccy} {ts_val}"
     ms_val = pn(mcap, bil=True)
-    if ms_val == "—" and _ms_price:
-        ms_val = f"Price: {_ms_price}"  # Show price when market cap unavailable
-    if curr and ms_val != "—":
-        ms_val = f"{curr} {ms_val}"
+    if _listing_ccy and ms_val != "—":
+        ms_val = f"{_listing_ccy} {ms_val}"
     sections = (memo_data or {}).get("pptx_sections") or {}
 
     # Build rows/cards data from parent scope (passed through payload)
@@ -1246,8 +1253,8 @@ def _write_preview_pptx_portrait(
     cp = memo.get("calendar_prior_quarter_released") or {}
     cn = memo.get("calendar_next_quarter") or {}
     _has_quarterly = bool((cp.get("net_sales") or cp.get("revenue")) and (cn.get("net_sales") or cn.get("revenue")))
-    _cM = f"({curr}M)" if curr else "(M)"
-    _cU = f"({curr})" if curr else ""
+    _cM = f"({_fin_ccy}M)" if _fin_ccy else "(M)"
+    _cU = f"({_fin_ccy})" if _fin_ccy else ""
     if _has_quarterly:
         rows = [
             (f"Revenue {_cM}", cp.get("net_sales"), cn.get("net_sales") or cn.get("revenue"), memo.get("yoy_revenue_pct_table")),
@@ -1261,12 +1268,13 @@ def _write_preview_pptx_portrait(
         _ebitda_p, _ebitda_e = _ann_val("ebitda", _ann_fy_prior), _ann_val("ebitda", _ann_fy_est)
         _ebit_p, _ebit_e = _ann_val("ebit", _ann_fy_prior), _ann_val("ebit", _ann_fy_est)
         _eps_p, _eps_e = _ann_val("eps", _ann_fy_prior), _ann_val("eps", _ann_fy_est)
-        rows = [
-            (f"Revenue {_cM}", _rev_p, _rev_e, _yoy_pct(_rev_p, _rev_e)),
-            (f"EBITDA {_cM}", _ebitda_p or _ebit_p, _ebitda_e or _ebit_e, _yoy_pct(_ebitda_p or _ebit_p, _ebitda_e or _ebit_e)),
-            (f"Net Income {_cM}", _ni_p, _ni_e, _yoy_pct(_ni_p, _ni_e)),
-            (f"EPS {_cU}", _eps_p, _eps_e, _yoy_pct(_eps_p, _eps_e)),
-        ]
+        rows = [(f"Revenue {_cM}", _rev_p, _rev_e, _yoy_pct(_rev_p, _rev_e))]
+        if _ebitda_p is not None or _ebitda_e is not None:
+            rows.append((f"EBITDA {_cM}", _ebitda_p, _ebitda_e, _yoy_pct(_ebitda_p, _ebitda_e)))
+        if _ebit_p is not None or _ebit_e is not None:
+            rows.append((f"EBIT {_cM}", _ebit_p, _ebit_e, _yoy_pct(_ebit_p, _ebit_e)))
+        rows.append((f"Net Income {_cM}", _ni_p, _ni_e, _yoy_pct(_ni_p, _ni_e)))
+        rows.append((f"EPS {_cU}", _eps_p, _eps_e, _yoy_pct(_eps_p, _eps_e)))
     # Yahoo fallback
     if all(r[1] is None and r[2] is None for r in rows):
         ya = sorted(getattr(payload, "annual_actuals", None) or [], key=lambda p: p.period_label, reverse=True)
@@ -1296,8 +1304,11 @@ def _write_preview_pptx_portrait(
     # If table has data but cards don't, pull from the table rows (estimate or actual)
     if not rv and rows:
         rv = rows[0][2] or rows[0][1]  # Revenue: estimate first, then actual
-    if not ev_eps and len(rows) > 3:
-        ev_eps = rows[3][2] or rows[3][1]  # EPS: estimate first, then actual
+    if not ev_eps and rows:
+        for _r in reversed(rows):
+            if str(_r[0]).startswith("EPS"):
+                ev_eps = _r[2] or _r[1]
+                break
 
     pv = vm.get("periods") or []
     _cy = str(datetime.now().year)
@@ -1329,6 +1340,11 @@ def _write_preview_pptx_portrait(
             _dy_raw = getattr(q, "dividend_yield", None)
             if _dy_raw is not None:
                 dy = round(_dy_raw * 100, 2) if _dy_raw < 1 else _dy_raw  # Yahoo returns decimal
+
+    _ms_cap_m = pick(vm.get("capitalization") or [])
+    if mcap is None and _ms_cap_m is not None:
+        _cap_ccy = (_stmt_unit or _fin_ccy or "").strip().upper()
+        ms_val = f"{_cap_ccy} {_ms_cap_m:,.0f}M" if _cap_ccy else f"{_ms_cap_m:,.0f}M"
 
     DARK = RGBColor(0x0D, 0x11, 0x17)
     GOLD = RGBColor(0xC9, 0xA2, 0x27)
@@ -1413,7 +1429,7 @@ def _write_preview_pptx_portrait(
         if _cp_slice and (any(_cr_slice) or any(_cn_slice)):
             build_revenue_ni_chart(
                 s2, Inches(0.6), Inches(5.0), Inches(3.2), Inches(2.2),
-                _cp_slice, _cr_slice, _cn_slice, _boundary, curr,
+                _cp_slice, _cr_slice, _cn_slice, _boundary, _fin_ccy,
                 ebit_values=_ce_slice,
             )
 
@@ -1512,7 +1528,7 @@ def _write_preview_pptx_portrait(
             _table_end_y = build_expanded_table(
                 s3, Inches(0.6), Inches(1.3),
                 _exp_periods, _exp_ann_dates, _exp_metrics,
-                curr, tx, rect,
+                _fin_ccy, tx, rect,
             )
         else:
             _table_end_y = Inches(1.3)
@@ -1588,7 +1604,12 @@ def _write_preview_pptx_portrait(
         pass
 
     _src_y = Inches(10.0) if (price_history and len(price_history) >= 20) else Inches(7.2)
-    tx(s3, Inches(0.6), _src_y, Inches(6), Inches(0.3), f"Actuals: company filings via Yahoo Finance  |  Estimates: MarketScreener analyst consensus as of {datetime.now().strftime('%d %b %Y')}", sz=9, rgb=MUTED)
+    _src_note = (
+        f"Actuals: company filings via Yahoo Finance  |  Estimates: MarketScreener analyst consensus as of {datetime.now().strftime('%d %b %Y')}"
+    )
+    if _stmt_unit:
+        _src_note += f"  |  Forecast amounts: {_fin_ccy}M (MS /finances/ unit note)"
+    tx(s3, Inches(0.6), _src_y, Inches(6), Inches(0.3), _src_note, sz=9, rgb=MUTED)
     if _is_bank_p:
         tx(s3, Inches(0.6), Inches(7.4), Inches(6), Inches(0.3), "* EBITDA / EV-EBITDA not applicable for banks and financial institutions", sz=8, rgb=MUTED)
     if quality_flags:
@@ -1700,6 +1721,7 @@ def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | 
             ticker = payload.company.ticker
             out_dir = report_output_dir()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Stable product naming: EMAAR.AE_20260413_111725_earnings_preview.pptx (download uses this basename).
             suffix = f"{ticker}_{ts}_earnings_preview.pptx"
             out_path = out_dir / suffix
             # Compute live upside and inject into memo_data so thesis uses consistent price basis

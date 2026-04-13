@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -40,13 +42,16 @@ def test_generate_report_does_not_overwrite_previous_runs(tmp_path, monkeypatch)
 
     r1 = gr.run(p1, memo_data={}, qa_audit={})
     assert r1.status.value.lower() == "success"
-    f1 = tmp_path / "2222.SR_runA1234_preview_balanced.pptx"
-    assert f1.is_file()
+    f1 = Path(str(r1.data))
+    assert f1.is_file() and f1.name.endswith("_earnings_preview.pptx")
+
+    time.sleep(1.2)  # distinct YYYYMMDD_HHMMSS in filename
 
     r2 = gr.run(p2, memo_data={}, qa_audit={})
     assert r2.status.value.lower() == "success"
-    f2 = tmp_path / "2222.SR_runB5678_preview_balanced.pptx"
-    assert f2.is_file()
+    f2 = Path(str(r2.data))
+    assert f2.is_file() and f2.name.endswith("_earnings_preview.pptx")
+    assert f1 != f2
 
     # Critical: first file must still exist and must not be replaced by second run.
     assert f1.is_file()

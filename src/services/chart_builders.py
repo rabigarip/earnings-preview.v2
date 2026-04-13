@@ -81,7 +81,8 @@ def build_revenue_ni_chart(
 
     rev_vals = _to_display(revenues)
     ni_vals = _to_display(net_incomes)
-    ebit_vals = _to_display(ebit_values) if ebit_values else [0.0] * len(periods)
+    # Distinguish "no EBIT series" (None) from "empty slice" ([] → zeros), never substitute EBITDA.
+    ebit_vals = _to_display(ebit_values) if ebit_values is not None else [0.0] * len(periods)
 
     chart_data = CategoryChartData()
     labels = [p.replace("FY", "") for p in periods]
@@ -166,8 +167,16 @@ def build_pe_chart(
     chart_data = CategoryChartData()
     labels = [p.replace("FY", "") for p in periods]
     chart_data.categories = labels
-    # Replace None/0 with small value to avoid empty bars
-    pe_clean = [_safe_float(v) if v and v > 0 else 0.0 for v in pe_values]
+    # Negative P/E = loss year → show 0 in chart, annotate as "N/M"
+    pe_clean = []
+    _nm_years = []
+    for i, v in enumerate(pe_values):
+        fv = _safe_float(v)
+        if v is None or fv <= 0:
+            pe_clean.append(0.0)
+            _nm_years.append(labels[i] if i < len(labels) else "")
+        else:
+            pe_clean.append(fv)
     chart_data.add_series("P/E", pe_clean)
 
     chart_frame = slide.shapes.add_chart(
@@ -214,19 +223,24 @@ def build_pe_chart(
     except AttributeError:
         pass
 
-    # 5yr average annotation
+    # 5yr average + N/M annotation
+    from pptx.enum.text import PP_ALIGN
+    _annotations = []
+    if _nm_years:
+        _annotations.append(f"N/M: {', '.join(_nm_years)}")
     if five_yr_avg is not None and five_yr_avg > 0:
-        from pptx.enum.text import PP_ALIGN
+        _annotations.append(f"5yr Avg: {five_yr_avg:.1f}x")
+    if _annotations:
         txbox = slide.shapes.add_textbox(
             x + Inches(0.05), y + Inches(0.02), w - Inches(0.1), Inches(0.18)
         )
         tf = txbox.text_frame
         tf.word_wrap = False
         p = tf.paragraphs[0]
-        p.text = f"5yr Avg: {five_yr_avg:.1f}x"
+        p.text = " | ".join(_annotations)
         p.alignment = PP_ALIGN.RIGHT
         if p.runs:
-            p.runs[0].font.size = Pt(7)
+            p.runs[0].font.size = Pt(6)
             p.runs[0].font.color.rgb = PURPLE_AVG
             p.runs[0].font.bold = True
 

@@ -100,45 +100,66 @@ def _fetch_consensus_page(url: str) -> tuple[BeautifulSoup | None, str, list[str
         return None, "Invalid URL", errors
 
     timeout = 15
+    max_attempts = 3
+    backoff_seconds = 0.8
     if _USE_CONFIG:
         try:
             timeout = cfg().get("scraping", {}).get("timeout_seconds", timeout)
+            max_attempts = int(cfg().get("scraping", {}).get("retry_attempts", max_attempts))
+            backoff_seconds = float(cfg().get("scraping", {}).get("retry_backoff_seconds", backoff_seconds))
         except Exception:
             pass
+    max_attempts = max(1, max_attempts)
 
-    try:
-        from src.providers.marketscreener_pages import _get_session
-        session = _get_session()
-        session.headers["Sec-Fetch-Site"] = "same-origin"
-        session.headers["Referer"] = "https://www.marketscreener.com/"
-        resp = session.get(url, timeout=timeout)
-        if resp.status_code != 200:
-            errors.append(f"HTTP {resp.status_code}")
-            return None, f"HTTP {resp.status_code}", errors
-        text = resp.text
-        # Optional: cache HTML for debugging (when project config is used)
-        if _USE_CONFIG:
-            try:
-                if cfg().get("scraping", {}).get("cache_html"):
-                    slug = re.sub(r"[^a-zA-Z0-9-]", "_", url.split("/")[-2] or "page")[:80]
-                    cache_dir = root() / "cache"
-                    cache_dir.mkdir(exist_ok=True)
-                    (cache_dir / f"ms_consensus_{slug}.html").write_text(text, encoding="utf-8")
-            except Exception:
-                pass
-        from src.providers.marketscreener_pages import _is_blocked_response
-        if _is_blocked_response(text):
-            errors.append("Captcha or access denied in response")
-            return None, "Block/captcha detected", errors
-        # Check if we got a real consensus page (not homepage redirect)
-        if "Number of Analysts" not in text and "Mean consensus" not in text:
-            errors.append("Response does not look like a consensus page (redirect/block?)")
-            # Still return soup so we can detect sections and return PARTIAL if needed
-        soup = BeautifulSoup(text, "lxml")
-        return soup, "ok", errors
-    except requests.RequestException as e:
-        errors.append(str(e))
-        return None, str(e), errors
+    slug = re.sub(r"[^a-zA-Z0-9-]", "_", url.split("/")[-2] or "page")[:80]
+    cache_path = None
+    if _USE_CONFIG:
+        try:
+            cache_dir = root() / "cache"
+            cache_dir.mkdir(exist_ok=True)
+            cache_path = cache_dir / f"ms_consensus_{slug}.html"
+        except Exception:
+            cache_path = None
+
+    from src.providers.marketscreener_pages import _get_session, _is_blocked_response
+    for attempt in range(1, max_attempts + 1):
+        try:
+            session = _get_session()
+            session.headers["Sec-Fetch-Site"] = "same-origin"
+            session.headers["Referer"] = "https://www.marketscreener.com/"
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code == 200:
+                text = resp.text
+                if _is_blocked_response(text):
+                    errors.append(f"Attempt {attempt}: captcha or access denied")
+                else:
+                    if _USE_CONFIG and cache_path is not None and cfg().get("scraping", {}).get("cache_html"):
+                        try:
+                            cache_path.write_text(text, encoding="utf-8")
+                        except Exception:
+                            pass
+                    if "Number of Analysts" not in text and "Mean consensus" not in text:
+                        errors.append("Response does not look like a consensus page (redirect/block?)")
+                    return BeautifulSoup(text, "lxml"), "ok", errors
+            else:
+                errors.append(f"Attempt {attempt}: HTTP {resp.status_code}")
+                if resp.status_code not in (403, 408, 425, 429, 500, 502, 503, 504):
+                    break
+        except requests.RequestException as e:
+            errors.append(f"Attempt {attempt}: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(backoff_seconds * attempt)
+
+    if cache_path is not None and cache_path.exists():
+        try:
+            text = cache_path.read_text(encoding="utf-8")
+            if text:
+                errors.append("Using cached consensus HTML (live fetch failed)")
+                return BeautifulSoup(text, "lxml"), "cache_fallback", errors
+        except Exception:
+            pass
+    return None, "Live fetch failed", errors
 
 
 # ─── Parse top-level summary (separate from section detection) ────────────────

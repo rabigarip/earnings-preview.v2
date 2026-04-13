@@ -139,46 +139,98 @@ def _cache_slug(url: str, page_name: str, cache_key_prefix: str | None = None) -
     return f"{page_name}_{slug}"
 
 
+def _cache_file_path(cache_slug: str):
+    if not _USE_CONFIG:
+        return None
+    try:
+        cache_dir = root() / "cache"
+        cache_dir.mkdir(exist_ok=True)
+        safe = re.sub(r"[^a-zA-Z0-9-]", "_", cache_slug)[:80]
+        return cache_dir / f"ms_{safe}.html"
+    except Exception:
+        return None
+
+
+def _write_cache_html(cache_slug: str, text: str) -> None:
+    if not (_USE_CONFIG and cfg().get("scraping", {}).get("cache_html")):
+        return
+    path = _cache_file_path(cache_slug)
+    if path is None:
+        return
+    try:
+        path.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_cache_html(cache_slug: str) -> BeautifulSoup | None:
+    path = _cache_file_path(cache_slug)
+    if path is None or not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+        if not text:
+            return None
+        return BeautifulSoup(text, "lxml")
+    except Exception:
+        return None
+
+
 def _fetch_page(url: str, cache_slug: str) -> tuple[BeautifulSoup | None, list[str]]:
-    """Fetch URL via shared session (cookies + keep-alive), optional cache, return (soup, errors)."""
+    """Fetch URL via shared session (cookies + keep-alive), optional retries/cache fallback."""
     errors: list[str] = []
     timeout = 15
+    max_attempts = 3
+    backoff_seconds = 0.8
     if _USE_CONFIG:
         try:
             timeout = cfg().get("scraping", {}).get("timeout_seconds", timeout)
+            max_attempts = int(cfg().get("scraping", {}).get("retry_attempts", max_attempts))
+            backoff_seconds = float(cfg().get("scraping", {}).get("retry_backoff_seconds", backoff_seconds))
         except Exception:
             pass
+    max_attempts = max(1, max_attempts)
 
-    try:
-        session = _get_session()
-        # Set referer for non-search pages (looks like natural browsing)
-        if "/search/" not in url:
-            session.headers["Sec-Fetch-Site"] = "same-origin"
-            session.headers["Referer"] = "https://www.marketscreener.com/"
-        else:
-            session.headers["Sec-Fetch-Site"] = "none"
-            session.headers.pop("Referer", None)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            session = _get_session()
+            # Set referer for non-search pages (looks like natural browsing)
+            if "/search/" not in url:
+                session.headers["Sec-Fetch-Site"] = "same-origin"
+                session.headers["Referer"] = "https://www.marketscreener.com/"
+            else:
+                session.headers["Sec-Fetch-Site"] = "none"
+                session.headers.pop("Referer", None)
 
-        resp = session.get(url, timeout=timeout)
-        if resp.status_code != 200:
-            errors.append(f"HTTP {resp.status_code}")
-            return None, errors
-        text = resp.text
-        if _is_blocked_response(text):
-            errors.append("Captcha or access denied")
-            return None, errors
-        if _USE_CONFIG and cfg().get("scraping", {}).get("cache_html"):
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code == 200:
+                text = resp.text
+                if _is_blocked_response(text):
+                    errors.append(f"Attempt {attempt}: captcha/access denied")
+                else:
+                    _write_cache_html(cache_slug, text)
+                    return BeautifulSoup(text, "lxml"), errors
+            else:
+                errors.append(f"Attempt {attempt}: HTTP {resp.status_code}")
+                # Retry mainly for temporary throttling/server errors.
+                if resp.status_code not in (403, 408, 425, 429, 500, 502, 503, 504):
+                    break
+        except requests.RequestException as e:
+            errors.append(f"Attempt {attempt}: {e}")
+
+        if attempt < max_attempts:
+            time.sleep(backoff_seconds * attempt)
+            # Re-warm session cookies between retries to reduce bot-wall failures.
             try:
-                cache_dir = root() / "cache"
-                cache_dir.mkdir(exist_ok=True)
-                safe = re.sub(r"[^a-zA-Z0-9-]", "_", cache_slug)[:80]
-                (cache_dir / f"ms_{safe}.html").write_text(text, encoding="utf-8")
+                _get_session().get("https://www.marketscreener.com/", timeout=min(10, timeout))
             except Exception:
                 pass
-        return BeautifulSoup(text, "lxml"), errors
-    except requests.RequestException as e:
-        errors.append(str(e))
-        return None, errors
+
+    cached = _read_cache_html(cache_slug)
+    if cached is not None:
+        errors.append("Using cached MarketScreener HTML (live fetch failed)")
+        return cached, errors
+    return None, errors
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -286,7 +338,8 @@ def _parse_unit_note(text: str) -> tuple[str | None, str | None]:
     text = text.lower()
     currency = None
     scale = None
-    for c in ("SAR", "USD", "EUR", "GBP"):
+    # Prefer longer / market-specific codes where substring ambiguity matters
+    for c in ("SAR", "AED", "QAR", "KWD", "OMR", "BHD", "USD", "EUR", "GBP"):
         if c.lower() in text:
             currency = c
             break
@@ -745,6 +798,9 @@ def fetch_financial_forecast_series(base_company_url: str, cache_key_prefix: str
             # Fallback: prefix match for labels like "Net sales" in "Net sales1"
             for rlabel, vals in rows:
                 rl = rlabel.lower().strip().rstrip("0123456789 ")
+                # Never let "EBIT" match "EBITDA" via prefix (both start with "ebit")
+                if ll == "ebit" and "ebitda" in rl:
+                    continue
                 if rl.startswith(ll) and len(rl) <= len(ll) + 2:
                     return vals
         return None
@@ -778,13 +834,14 @@ def fetch_financial_forecast_series(base_company_url: str, cache_key_prefix: str
     has_q = bool(period_headers_quarterly and quarterly_net_sales)
     log.info("[MarketScreener] Quarterly net sales extracted... %s", "SUCCESS" if has_q else "PARTIAL")
 
-    # Unit note from page text
+    # Unit note from page text (e.g. "USD in Million" on income statement)
     full_text = soup.get_text(" ", strip=True)
-    unit_currency, unit_scale = None, "million"
-    if "SAR in Million" in full_text or "SAR in Million" in full_text:
-        unit_currency = "SAR"
+    unit_currency, unit_scale = _parse_unit_note(full_text)
+    if unit_scale is None:
         unit_scale = "million"
-    _parse_unit_note(full_text)
+    if "sar in million" in full_text.lower():
+        unit_currency = unit_currency or "SAR"
+        unit_scale = "million"
 
     payload = {
         "source_page": url,
@@ -1111,6 +1168,7 @@ def fetch_valuation_multiples(base_company_url: str, cache_key_prefix: str | Non
     pe_vals = _row("P/E ratio", "PE ratio", "P/E")
     pbr_vals = _row("PBR", "P/B", "Price to Book")
     peg_vals = _row("PEG")
+    cap_vals = _row("Capitalization", "Market capitalization", "Market Capitalization")
     cap_rev_vals = _row("Capitalization / Revenue", "Cap/Revenue")
     ev_rev_vals = _row("EV / Revenue", "EV/Revenue")
     ev_ebit_vals = _row("EV / EBIT", "EV/EBIT")
@@ -1127,6 +1185,7 @@ def fetch_valuation_multiples(base_company_url: str, cache_key_prefix: str | Non
         "pe": [_coerce_numeric_or_none(v) for v in pe_vals],
         "pbr": [_coerce_numeric_or_none(v) for v in pbr_vals],
         "peg": [_coerce_numeric_or_none(v) for v in peg_vals],
+        "capitalization": [_coerce_numeric_or_none(v) for v in cap_vals],
         "capitalization_revenue": [_coerce_numeric_or_none(v) for v in cap_rev_vals],
         "ev_revenue": [_coerce_numeric_or_none(v) for v in ev_rev_vals],
         "ev_ebit": [_coerce_numeric_or_none(v) for v in ev_ebit_vals],
@@ -1154,6 +1213,7 @@ def _empty_valuation_payload(source_page: str, status: PageStepStatus) -> dict[s
         "pe": [],
         "pbr": [],
         "peg": [],
+        "capitalization": [],
         "capitalization_revenue": [],
         "ev_revenue": [],
         "ev_ebit": [],
