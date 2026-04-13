@@ -96,6 +96,63 @@ def run_preview(ticker: str, *, skip_llm: bool = False, bloomberg_data: dict | N
     _collect(r, results)
     ms_blocks = deepcopy(r.data) if isinstance(r.data, dict) else {}
 
+    # ── 5b-verify. Cross-validate MS data against Yahoo quote ──
+    # If MS consensus price diverges >3x from Yahoo, the cached slug is wrong.
+    # Invalidate it, re-resolve via ISIN, and re-fetch.
+    _ms_cs = ms_blocks.get("consensus_summary") or {}
+    _ms_close = _ms_cs.get("last_close_price") if isinstance(_ms_cs, dict) else None
+    _ya_price = quote.price if quote else None
+    if _ms_close and _ya_price and _ya_price > 0:
+        _price_ratio = _ms_close / _ya_price
+        if _price_ratio < 0.3 or _price_ratio > 3.0:
+            logger.warning("MS entity mismatch for %s: MS close=%.2f vs Yahoo=%.2f (%.1fx). Re-resolving...",
+                           ticker, _ms_close, _ya_price, _price_ratio)
+            try:
+                from src.services.entity_resolution import invalidate_marketscreener_cache, ensure_marketscreener_cached
+                from src.providers.marketscreener_pages import resolve_slug_from_search
+                from src.storage.db import load_company as _load_co, update_company_marketscreener
+                from datetime import timezone as _tz
+
+                invalidate_marketscreener_cache(ticker)
+
+                # Try ISIN resolution first
+                _updated_row = ensure_marketscreener_cached(ticker)
+                _new_url = (_updated_row.get("marketscreener_company_url") or "").strip() if _updated_row else ""
+                _old_url = getattr(company, "marketscreener_company_url", "")
+
+                _resolved = False
+                if _new_url and _new_url != _old_url:
+                    _resolved = True
+                else:
+                    # ISIN returned same wrong entity — try company name search
+                    _cname = getattr(company, "company_name", "") or ""
+                    if _cname:
+                        _name_slug = resolve_slug_from_search(ticker, company_name=_cname)
+                        if _name_slug and _name_slug not in (_old_url or ""):
+                            _name_url = f"https://www.marketscreener.com/quote/stock/{_name_slug}/"
+                            update_company_marketscreener(
+                                ticker=ticker, marketscreener_company_url=_name_url,
+                                marketscreener_symbol=ticker, marketscreener_status="ok",
+                                last_verified=datetime.now(_tz.utc).isoformat(), marketscreener_id=_name_slug,
+                            )
+                            _updated_row = _load_co(ticker)
+                            _new_url = _name_url
+                            _resolved = True
+                            logger.info("Re-resolved %s via name search → %s", ticker, _name_slug)
+
+                if _resolved and _new_url != _old_url:
+                    from src.models.company import CompanyMaster
+                    company = CompanyMaster(**_updated_row)
+                    r = fetch_marketscreener_pages.run(ticker, company)
+                    _collect(r, results)
+                    ms_blocks = deepcopy(r.data) if isinstance(r.data, dict) else {}
+                else:
+                    logger.warning("Re-resolution failed for %s — suppressing MS data", ticker)
+                    ms_blocks = {}
+            except Exception as exc:
+                logger.warning("Re-resolution error for %s: %s — suppressing MS data", ticker, exc)
+                ms_blocks = {}
+
     # ── 5c. Yahoo earnings date fallback (helps when MS /calendar/ blocked) ──
     r = fetch_earnings_date(ticker)
     _collect(r, results)
