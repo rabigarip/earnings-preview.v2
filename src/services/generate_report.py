@@ -1392,6 +1392,7 @@ def _write_preview_pptx_portrait(
         _chart_periods = _ann.get("periods") or []
         _chart_rev = _ann.get("net_sales") or []
         _chart_ni = _ann.get("net_income") or []
+        _chart_ebit = _ann.get("ebit") or []
         _chart_pe = vm.get("pe") or []
         _chart_pe_periods = vm.get("periods") or []
 
@@ -1408,10 +1409,12 @@ def _write_preview_pptx_portrait(
             if _cd and str(_cd).strip() not in ("", "-", "None"):
                 _boundary = _ci
 
+        _ce_slice = _chart_ebit[_cp_start:_cp_start + len(_cp_slice)]
         if _cp_slice and (any(_cr_slice) or any(_cn_slice)):
             build_revenue_ni_chart(
                 s2, Inches(0.6), Inches(5.0), Inches(3.2), Inches(2.2),
                 _cp_slice, _cr_slice, _cn_slice, _boundary, curr,
+                ebit_values=_ce_slice,
             )
 
         # P/E chart

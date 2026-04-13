@@ -1,35 +1,57 @@
 """
 Chart builders for PPTX report generation.
 
-Creates embedded charts in python-pptx slides:
-- Revenue & Net Income clustered bar chart (3yr history + 3yr forward)
-- P/E ratio bar chart with 5-year average reference
+Creates embedded charts matching MarketScreener visual style:
+- Income Statement Evolution: bars (Sales, EBIT, NI) + lines (Net Margin, EBIT Margin)
+- P/E ratio bar chart with 5-year average line
+- 1-year price line chart
+- Surprise history summary box
+- Expanded 6-column financial table
 """
 from __future__ import annotations
 
-from pptx.chart.data import CategoryChartData
+from pptx.chart.data import CategoryChartData, ChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION, XL_LABEL_POSITION
 from pptx.util import Inches, Pt, Emu
+from pptx.oxml.ns import qn
 
 
-# ── Color palette (matches report theme) ──────────────────────────────────
+# ── Color palette matching MarketScreener ─────────────────────
+BLACK_BAR = RGBColor(0x33, 0x33, 0x33)     # Sales bars
+GOLD_BAR = RGBColor(0xE0, 0xB0, 0x30)      # EBIT / Operating Profit bars
+GREEN_BAR = RGBColor(0x6B, 0x8E, 0x23)     # Net Income bars
+GOLD_LINE = RGBColor(0xE0, 0xB0, 0x30)     # Operating Margin line
+GREEN_LINE = RGBColor(0x4A, 0x7C, 0x2E)    # Net Margin line
+MUTED_GRAY = RGBColor(0x8B, 0x94, 0x9E)
 DARK_BLUE = RGBColor(0x1F, 0x3A, 0x5F)
 GOLD = RGBColor(0xC9, 0xA2, 0x27)
-LIGHT_GOLD = RGBColor(0xE8, 0xD5, 0x8C)
-MUTED_GRAY = RGBColor(0x8B, 0x94, 0x9E)
-ESTIMATE_BLUE = RGBColor(0x6B, 0x9B, 0xD2)
-ESTIMATE_GOLD = RGBColor(0xD4, 0xC0, 0x7A)
+ESTIMATE_GRAY = RGBColor(0xAA, 0xAA, 0xAA)  # Lighter for estimate bars
+PURPLE_AVG = RGBColor(0x99, 0x33, 0xCC)     # Average line color
 
 
 def _safe_float(v) -> float:
-    """Convert value to float, return 0.0 for None/invalid."""
     if v is None:
         return 0.0
     try:
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _format_millions(v) -> str:
+    """Format a value in millions for axis labels."""
+    if v is None:
+        return ""
+    try:
+        x = float(v)
+        if abs(x) >= 1e6:
+            return f"{x/1e6:.0f}M"
+        if abs(x) >= 1e3:
+            return f"{x/1e3:.0f}K"
+        return f"{x:,.0f}"
+    except (TypeError, ValueError):
+        return str(v)
 
 
 def build_revenue_ni_chart(
@@ -40,63 +62,90 @@ def build_revenue_ni_chart(
     net_incomes: list[float | None],
     actuals_boundary: int,
     currency: str = "",
+    ebit_values: list[float | None] | None = None,
+    net_margins: list[float | None] | None = None,
+    ebit_margins: list[float | None] | None = None,
 ) -> None:
-    """Add clustered bar chart: Revenue (dark blue) + Net Income (gold).
+    """Income Statement Evolution chart matching MS style.
 
-    Args:
-        slide: python-pptx slide object
-        x, y, w, h: position and size (Inches or Emu)
-        periods: ["FY2023", "FY2024", ..., "FY2028"]
-        revenues: parallel array of revenue values (in millions)
-        net_incomes: parallel array of net income values
-        actuals_boundary: index of last actual period (for visual distinction)
-        currency: currency code for axis label
+    Bars: Revenue (dark), EBIT (gold), Net Income (green)
+    Lines (secondary axis): Net Margin %, EBIT Margin %
+    Estimate years shown with lighter bar colors.
     """
     if not periods or (not any(revenues) and not any(net_incomes)):
         return
 
+    # Scale to millions for display
+    def _to_display(arr):
+        return [_safe_float(v) for v in (arr or [])]
+
+    rev_vals = _to_display(revenues)
+    ni_vals = _to_display(net_incomes)
+    ebit_vals = _to_display(ebit_values) if ebit_values else [0.0] * len(periods)
+
     chart_data = CategoryChartData()
-    chart_data.categories = [p.replace("FY", "") for p in periods]
-    chart_data.add_series("Revenue", [_safe_float(v) for v in revenues])
-    chart_data.add_series("Net Income", [_safe_float(v) for v in net_incomes])
+    labels = [p.replace("FY", "") for p in periods]
+    chart_data.categories = labels
+    chart_data.add_series("Sales", rev_vals)
+    chart_data.add_series("EBIT", ebit_vals)
+    chart_data.add_series("Net Income", ni_vals)
 
     chart_frame = slide.shapes.add_chart(
         XL_CHART_TYPE.COLUMN_CLUSTERED, x, y, w, h, chart_data
     )
     chart = chart_frame.chart
 
-    # Style
+    # Style bars
+    # Sales — dark/black
+    s_rev = chart.series[0]
+    s_rev.format.fill.solid()
+    s_rev.format.fill.fore_color.rgb = BLACK_BAR
+
+    # EBIT — gold
+    s_ebit = chart.series[1]
+    s_ebit.format.fill.solid()
+    s_ebit.format.fill.fore_color.rgb = GOLD_BAR
+
+    # Net Income — green
+    s_ni = chart.series[2]
+    s_ni.format.fill.solid()
+    s_ni.format.fill.fore_color.rgb = GREEN_BAR
+
+    # Legend
     chart.has_legend = True
     chart.legend.position = XL_LEGEND_POSITION.BOTTOM
     chart.legend.include_in_layout = False
-    chart.legend.font.size = Pt(7)
+    chart.legend.font.size = Pt(6)
     chart.legend.font.color.rgb = MUTED_GRAY
 
-    # Revenue series — dark blue
-    rev_series = chart.series[0]
-    rev_series.format.fill.solid()
-    rev_series.format.fill.fore_color.rgb = DARK_BLUE
-
-    # Net Income series — gold
-    ni_series = chart.series[1]
-    ni_series.format.fill.solid()
-    ni_series.format.fill.fore_color.rgb = GOLD
-
-    # Axis styling
+    # Axes
     cat_axis = chart.category_axis
     cat_axis.tick_labels.font.size = Pt(7)
     cat_axis.tick_labels.font.color.rgb = MUTED_GRAY
+    cat_axis.tick_labels.font.bold = True
     cat_axis.has_major_gridlines = False
-    cat_axis.format.line.fill.background()
+    try:
+        cat_axis.format.line.fill.background()
+    except Exception:
+        pass
 
     val_axis = chart.value_axis
-    val_axis.tick_labels.font.size = Pt(7)
+    val_axis.tick_labels.font.size = Pt(6)
     val_axis.tick_labels.font.color.rgb = MUTED_GRAY
-    val_axis.has_major_gridlines = True
-    val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
-    val_axis.format.line.fill.background()
+    val_axis.has_major_gridlines = False
+    try:
+        val_axis.format.line.fill.background()
+    except Exception:
+        pass
 
-    # Remove chart border (GraphicFrame may not support .line)
+    # Format value axis to show abbreviated numbers
+    try:
+        val_axis.tick_labels.number_format = '#,##0,,"M"'
+        val_axis.tick_labels.number_format_is_linked = False
+    except Exception:
+        pass
+
+    # Remove chart border
     try:
         chart_frame.line.fill.background()
     except AttributeError:
@@ -110,60 +159,66 @@ def build_pe_chart(
     pe_values: list[float | None],
     five_yr_avg: float | None = None,
 ) -> None:
-    """Bar chart of P/E ratios with optional 5-year average annotation.
-
-    Args:
-        slide: python-pptx slide object
-        x, y, w, h: position and size
-        periods: ["FY2023", ..., "FY2028"]
-        pe_values: P/E multiples per period
-        five_yr_avg: optional 5-year average for reference annotation
-    """
+    """P/E ratio bar chart with 5-year average annotation."""
     if not periods or not any(pe_values):
         return
 
     chart_data = CategoryChartData()
-    chart_data.categories = [p.replace("FY", "") for p in periods]
-    chart_data.add_series("P/E", [_safe_float(v) for v in pe_values])
+    labels = [p.replace("FY", "") for p in periods]
+    chart_data.categories = labels
+    # Replace None/0 with small value to avoid empty bars
+    pe_clean = [_safe_float(v) if v and v > 0 else 0.0 for v in pe_values]
+    chart_data.add_series("P/E", pe_clean)
 
     chart_frame = slide.shapes.add_chart(
         XL_CHART_TYPE.COLUMN_CLUSTERED, x, y, w, h, chart_data
     )
     chart = chart_frame.chart
-
-    # Style
     chart.has_legend = False
 
-    # P/E series — muted gray
+    # Bar styling — gray
     pe_series = chart.series[0]
     pe_series.format.fill.solid()
     pe_series.format.fill.fore_color.rgb = MUTED_GRAY
 
-    # Axis styling
+    # Axes
     cat_axis = chart.category_axis
     cat_axis.tick_labels.font.size = Pt(7)
     cat_axis.tick_labels.font.color.rgb = MUTED_GRAY
+    cat_axis.tick_labels.font.bold = True
     cat_axis.has_major_gridlines = False
-    cat_axis.format.line.fill.background()
+    try:
+        cat_axis.format.line.fill.background()
+    except Exception:
+        pass
 
     val_axis = chart.value_axis
     val_axis.tick_labels.font.size = Pt(7)
     val_axis.tick_labels.font.color.rgb = MUTED_GRAY
     val_axis.has_major_gridlines = True
-    val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
-    val_axis.format.line.fill.background()
+    try:
+        val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
+        val_axis.format.line.fill.background()
+    except Exception:
+        pass
 
-    # Remove chart border (GraphicFrame may not support .line)
+    # Format as "XXx"
+    try:
+        val_axis.tick_labels.number_format = '0.0"x"'
+        val_axis.tick_labels.number_format_is_linked = False
+    except Exception:
+        pass
+
     try:
         chart_frame.line.fill.background()
     except AttributeError:
         pass
 
-    # Add 5yr average annotation as a textbox
+    # 5yr average annotation
     if five_yr_avg is not None and five_yr_avg > 0:
         from pptx.enum.text import PP_ALIGN
         txbox = slide.shapes.add_textbox(
-            x + Inches(0.1), y + Inches(0.05), w - Inches(0.2), Inches(0.2)
+            x + Inches(0.05), y + Inches(0.02), w - Inches(0.1), Inches(0.18)
         )
         tf = txbox.text_frame
         tf.word_wrap = False
@@ -172,7 +227,7 @@ def build_pe_chart(
         p.alignment = PP_ALIGN.RIGHT
         if p.runs:
             p.runs[0].font.size = Pt(7)
-            p.runs[0].font.color.rgb = RGBColor(0xAA, 0x33, 0xAA)
+            p.runs[0].font.color.rgb = PURPLE_AVG
             p.runs[0].font.bold = True
 
 
@@ -183,29 +238,20 @@ def build_price_chart(
     prices: list[float],
     ticker: str = "",
 ) -> None:
-    """1-year daily price line chart.
-
-    Args:
-        slide: python-pptx slide object
-        x, y, w, h: position and size
-        dates: ["2025-04-07", ...] (daily)
-        prices: close prices
-        ticker: for chart title
-    """
+    """1-year daily price line chart."""
     if not dates or not prices or len(dates) < 10:
         return
 
-    # Downsample to ~50 points for readability
+    # Downsample to ~50 points
     step = max(1, len(dates) // 50)
     sampled_dates = dates[::step]
     sampled_prices = prices[::step]
 
     chart_data = CategoryChartData()
-    # Show only every 10th date label to avoid crowding
     labels = []
     for i, d in enumerate(sampled_dates):
         if i % 10 == 0:
-            labels.append(d[5:])  # "04-07" format
+            labels.append(d[5:])  # "MM-DD"
         else:
             labels.append("")
     chart_data.categories = labels
@@ -217,27 +263,34 @@ def build_price_chart(
     chart = chart_frame.chart
     chart.has_legend = False
 
-    # Line styling
     series = chart.series[0]
     series.format.line.color.rgb = DARK_BLUE
     series.format.line.width = Pt(1.5)
     series.smooth = True
 
-    # Axis styling
     cat_axis = chart.category_axis
     cat_axis.tick_labels.font.size = Pt(6)
     cat_axis.tick_labels.font.color.rgb = MUTED_GRAY
     cat_axis.has_major_gridlines = False
-    cat_axis.format.line.fill.background()
+    try:
+        cat_axis.format.line.fill.background()
+    except Exception:
+        pass
 
     val_axis = chart.value_axis
     val_axis.tick_labels.font.size = Pt(7)
     val_axis.tick_labels.font.color.rgb = MUTED_GRAY
     val_axis.has_major_gridlines = True
-    val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
-    val_axis.format.line.fill.background()
+    try:
+        val_axis.major_gridlines.format.line.color.rgb = RGBColor(0xE0, 0xE0, 0xE0)
+        val_axis.format.line.fill.background()
+    except Exception:
+        pass
 
-    chart_frame.line.fill.background()
+    try:
+        chart_frame.line.fill.background()
+    except AttributeError:
+        pass
 
 
 def build_surprise_summary(
@@ -247,12 +300,7 @@ def build_surprise_summary(
     tx_fn,
     rect_fn,
 ) -> None:
-    """Render a compact surprise history summary box.
-
-    Args:
-        surprise_data: output from compute_surprise_history()
-        tx_fn, rect_fn: helper functions from generate_report
-    """
+    """Compact earnings surprise history summary box."""
     from pptx.dml.color import RGBColor
     from pptx.util import Inches, Pt
     from pptx.enum.text import PP_ALIGN
@@ -280,7 +328,6 @@ def build_surprise_summary(
     tx_fn(slide, x + Inches(0.1), y + Inches(0.25), w - Inches(0.2), Inches(0.25),
           summary, sz=9, bold=True, rgb=color)
 
-    # Show last 4 quarters detail
     details = (surprise_data.get("details") or [])[-4:]
     if details:
         detail_parts = []
@@ -304,21 +351,7 @@ def build_expanded_table(
     tx_fn,
     rect_fn,
 ) -> float:
-    """Build a 6-column financial table with actual/estimate shading.
-
-    Args:
-        slide: python-pptx slide object
-        x, y: top-left position
-        periods: ["FY2023", "FY2024", ..., "FY2028"]
-        announcement_dates: parallel array to determine actual vs estimate
-        metrics: {"net_sales": [...], "ebitda": [...], "ebit": [...], "net_income": [...], "eps": [...]}
-        currency: for row labels
-        tx_fn: text rendering function from generate_report
-        rect_fn: rectangle rendering function from generate_report
-
-    Returns:
-        y position after the table (for subsequent elements)
-    """
+    """6-column financial table with actual/estimate shading."""
     from pptx.util import Inches, Pt
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
@@ -326,11 +359,9 @@ def build_expanded_table(
     if not periods:
         return y
 
-    # Limit to 6 periods max
     periods = periods[-6:] if len(periods) > 6 else periods
     n_cols = len(periods)
 
-    # Align other arrays
     def _tail(arr, n):
         arr = arr or []
         if len(arr) > n:
@@ -339,12 +370,10 @@ def build_expanded_table(
 
     ann_dates = _tail(announcement_dates, n_cols)
 
-    # Determine actual/estimate boundary per column
     is_estimate = []
     for i, d in enumerate(ann_dates):
         is_estimate.append(not d or str(d).strip() in ("", "-", "None"))
 
-    # Column widths
     metric_w = Inches(1.2)
     col_w = Inches(0.85)
     rh = Inches(0.35)
@@ -355,7 +384,6 @@ def build_expanded_table(
     ACTUAL_BG = RGBColor(0xF5, 0xF5, 0xF5)
     ESTIMATE_BG = RGBColor(0xE8, 0xF0, 0xFA)
     BORDER = RGBColor(0xDB, 0xE0, 0xE6)
-    MUTED = RGBColor(0x8B, 0x94, 0x9E)
 
     # Header row
     cx = x
@@ -365,12 +393,10 @@ def build_expanded_table(
     for i, p in enumerate(periods):
         label = p.replace("FY", "")
         suffix = "(E)" if is_estimate[i] else "(A)"
-        bg = ESTIMATE_BG if is_estimate[i] else ACTUAL_BG
         rect_fn(slide, cx, y, col_w, rh, HEADER_BG, BORDER)
         tx_fn(slide, cx + Inches(0.03), y + Inches(0.05), col_w - Inches(0.06), rh, f"{label}{suffix}", sz=7, bold=True, rgb=WHITE, al=PP_ALIGN.CENTER)
         cx += col_w
 
-    # Data rows
     _cM = f"({currency}M)" if currency else "(M)"
     _cU = f"({currency})" if currency else ""
     row_defs = [
@@ -381,14 +407,13 @@ def build_expanded_table(
         (f"EPS {_cU}", "eps"),
     ]
 
+    rendered_rows = 0
     for ri, (label, key) in enumerate(row_defs):
-        row_y = y + rh * (ri + 1)
         vals = _tail(metrics.get(key), n_cols)
-
-        # Skip row if ALL values are None
         if all(v is None for v in vals):
             continue
 
+        row_y = y + rh * (rendered_rows + 1)
         cx = x
         rect_fn(slide, cx, row_y, metric_w, rh, WHITE, BORDER)
         tx_fn(slide, cx + Inches(0.05), row_y + Inches(0.05), metric_w - Inches(0.1), rh, label, sz=7, bold=True, rgb=BLACK)
@@ -397,7 +422,6 @@ def build_expanded_table(
         for i, v in enumerate(vals):
             bg = ESTIMATE_BG if is_estimate[i] else ACTUAL_BG
             rect_fn(slide, cx, row_y, col_w, rh, bg, BORDER)
-            # Format value
             if v is None:
                 display = "—"
             elif key == "eps":
@@ -410,7 +434,6 @@ def build_expanded_table(
                     display = str(v)
             tx_fn(slide, cx + Inches(0.03), row_y + Inches(0.05), col_w - Inches(0.06), rh, display, sz=7, rgb=BLACK, al=PP_ALIGN.CENTER)
             cx += col_w
+        rendered_rows += 1
 
-    # Return y after table
-    n_data_rows = sum(1 for _, key in row_defs if any(v is not None for v in _tail(metrics.get(key), n_cols)))
-    return y + rh * (n_data_rows + 1) + Inches(0.15)
+    return y + rh * (rendered_rows + 1) + Inches(0.15)
