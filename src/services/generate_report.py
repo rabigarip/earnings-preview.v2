@@ -1702,6 +1702,19 @@ def run(payload: ReportPayload, memo_data: dict | None = None, qa_audit: dict | 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             suffix = f"{ticker}_{ts}_earnings_preview.pptx"
             out_path = out_dir / suffix
+            # Compute live upside and inject into memo_data so thesis uses consistent price basis
+            _q = payload.quote
+            _cs = payload.consensus_summary or {}
+            _tgt = _cs.get("average_target_price") or (getattr(_q, "target_mean_price", None) if _q else None)
+            _live_p = (getattr(_q, "price", None) if _q else None) or _cs.get("last_close_price")
+            if _tgt and _live_p and _live_p > 0 and memo_data:
+                _live_upside = round((float(_tgt) - _live_p) / _live_p * 100, 1)
+                _hdr = memo_data.get("header") or {}
+                if isinstance(_hdr.get("upside_pct"), dict):
+                    _hdr["upside_pct"]["value"] = _live_upside
+                    _hdr["upside_pct"]["display_value"] = _live_upside
+                elif isinstance(_hdr, dict):
+                    _hdr["upside_pct"] = {"value": _live_upside, "display_value": _live_upside, "status": "pass"}
             iv_text, watch = _iv_text_and_watch(payload, memo_data, iv_style)
             quality_flags: list[str] = []
             if qa_audit:

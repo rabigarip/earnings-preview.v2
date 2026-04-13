@@ -734,8 +734,18 @@ def fetch_financial_forecast_series(base_company_url: str, cache_key_prefix: str
 
     def _row_by_label(rows: list[tuple[str, list[str]]], *labels: str) -> list[str] | None:
         for label in labels:
+            ll = label.lower().strip()
             for rlabel, vals in rows:
-                if label.lower() in rlabel.lower():
+                rl = rlabel.lower().strip()
+                # Strip trailing superscript markers (e.g. "EBITDA1" → "EBITDA")
+                rl_clean = rl.rstrip("0123456789 ")
+                # Exact match (after stripping) to avoid "EBIT" matching "EBITDA"
+                if rl_clean == ll:
+                    return vals
+            # Fallback: prefix match for labels like "Net sales" in "Net sales1"
+            for rlabel, vals in rows:
+                rl = rlabel.lower().strip().rstrip("0123456789 ")
+                if rl.startswith(ll) and len(rl) <= len(ll) + 2:
                     return vals
         return None
 
