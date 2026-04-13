@@ -128,10 +128,15 @@ def _compute_memo(
             if _ratio < 0.3 or _ratio > 3.0:
                 import logging
                 logging.getLogger(__name__).warning(
-                    "Suppressing MS consensus: price divergence %.1fx (MS close=%.2f vs Yahoo=%.2f) for %s",
+                    "Suppressing ALL MS data: price divergence %.1fx (MS close=%.2f vs Yahoo=%.2f) for %s — likely wrong entity",
                     _ratio, _ms_close, quote.price, getattr(company, "ticker", "?"),
                 )
+                # Suppress ALL MS data — wrong entity likely
                 consensus_summary = None
+                ms_annual_forecasts = None
+                ms_quarterly_forecasts = None
+                ms_eps_dividend_forecasts = None
+                ms_calendar_events = None
 
     # Consensus details (recommendation, analyst count, target)
     if consensus_summary:
@@ -676,8 +681,51 @@ def run(
             if _ms_cl and quote.price > 0:
                 _r = _ms_cl / quote.price
                 if _r < 0.3 or _r > 3.0:
-                    log.warning("Suppressed consensus_summary: price divergence %.1fx for %s", _r, getattr(company, "ticker", "?"))
+                    log.warning("Suppressed ALL MS data: price divergence %.1fx for %s — likely wrong entity", _r, getattr(company, "ticker", "?"))
+                    # Suppress ALL MS data — wrong entity
                     consensus_summary = None
+                    ms_summary = None
+                    ms_annual_forecasts = None
+                    ms_quarterly_forecasts = None
+                    ms_eps_dividend_forecasts = None
+                    ms_income_statement_actuals = None
+                    ms_valuation_multiples = None
+                    ms_calendar_events = None
+                    ms_quarterly_results_table = None
+
+        # Revenue cross-validation: suppress ALL MS if revenue diverges >3x from Yahoo
+        if ms_annual_forecasts and quote:
+            _ms_ann = ms_annual_forecasts.get("annual", {}) if isinstance(ms_annual_forecasts, dict) else {}
+            _ms_rev_list = _ms_ann.get("net_sales") or []
+            _ms_ann_dates = _ms_ann.get("announcement_dates") or []
+            _ya_actuals = annual or []
+            if _ms_rev_list and _ya_actuals:
+                # Find latest MS actual revenue
+                _ms_latest_rev = None
+                for _ri in range(len(_ms_ann_dates) - 1, -1, -1):
+                    if _ms_ann_dates[_ri] and str(_ms_ann_dates[_ri]).strip() not in ("", "-", "None"):
+                        if _ri < len(_ms_rev_list) and _ms_rev_list[_ri] is not None:
+                            _ms_latest_rev = _ms_rev_list[_ri]
+                            break
+                # Compare with Yahoo latest actual
+                if _ms_latest_rev and _ya_actuals:
+                    _ya_sorted = sorted(_ya_actuals, key=lambda p: p.period_label, reverse=True)
+                    _ya_rev = _ya_sorted[0].revenue if _ya_sorted else None
+                    if _ya_rev and _ms_latest_rev > 0:
+                        _ya_rev_M = _ya_rev / 1e6 if _ya_rev > 1e9 else _ya_rev
+                        _rev_ratio = _ya_rev_M / _ms_latest_rev if _ms_latest_rev != 0 else 0
+                        if _rev_ratio > 0 and (_rev_ratio > 3.0 or _rev_ratio < 0.33):
+                            log.warning("Suppressed ALL MS data: revenue divergence %.1fx (MS=%s vs Yahoo=%s) for %s — likely wrong entity",
+                                        _rev_ratio, _ms_latest_rev, _ya_rev_M, getattr(company, "ticker", "?"))
+                            consensus_summary = None
+                            ms_summary = None
+                            ms_annual_forecasts = None
+                            ms_quarterly_forecasts = None
+                            ms_eps_dividend_forecasts = None
+                            ms_income_statement_actuals = None
+                            ms_valuation_multiples = None
+                            ms_calendar_events = None
+                            ms_quarterly_results_table = None
 
         # ── Memo-specific computed (for front-page memo) ─────────────────────
         memo_computed = _compute_memo(
